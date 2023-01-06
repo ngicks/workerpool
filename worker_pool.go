@@ -53,28 +53,30 @@ type WorkerPool[T any] struct {
 	workers         map[string]*worker[T]
 	sleepingWorkers map[string]*worker[T]
 
+	fn                WorkExecuter[T]
 	workerConstructor WorkerConstructor[T]
 	abnormalReturnCb  func(error)
 }
 
 func New[T any](
-	workFn func(ctx context.Context, param T) error,
+	fn WorkExecuter[T],
 	options ...Option[T],
 ) *WorkerPool[T] {
 	w := &WorkerPool[T]{
+		fn:               fn,
 		workers:          make(map[string]*worker[T]),
 		sleepingWorkers:  make(map[string]*worker[T]),
 		abnormalReturnCb: func(err error) {},
 	}
 
 	for _, opt := range options {
-		w = opt(w)
+		opt(w)
 	}
 
 	if w.paramCh == nil {
 		paramCh := make(chan T)
 		w.paramCh = paramCh
-		w.workerConstructor = DefaultWorkerConstructor(workFn, paramCh, nil, nil)
+		w.workerConstructor = DefaultWorkerConstructor(paramCh, nil, nil)
 	}
 
 	return w
@@ -109,6 +111,7 @@ func (p *WorkerPool[T]) buildWorker() *worker[T] {
 	return &worker[T]{
 		id: uuid.NewString(),
 		Worker: p.workerConstructor(
+			p.fn,
 			func(T) { atomic.AddInt64(&p.activeWorkerNum, 1) },
 			func(T, error) { atomic.AddInt64(&p.activeWorkerNum, -1) },
 		),
@@ -129,7 +132,11 @@ func (p *panicErr) Error() string {
 	return fmt.Sprintf("%v\n\n%s", p.err, p.stack)
 }
 
-func (p *WorkerPool[T]) runWorker(worker *worker[T], shouldRecover bool, abnormalReturnCb func(error)) (workerErr error) {
+func (p *WorkerPool[T]) runWorker(
+	worker *worker[T],
+	shouldRecover bool,
+	abnormalReturnCb func(error),
+) (workerErr error) {
 	var normalReturn, recovered bool
 	var abnormalReturnErr error
 
