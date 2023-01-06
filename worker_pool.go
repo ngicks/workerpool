@@ -18,6 +18,7 @@ var goroutines atomic.Int64
 var (
 	ErrAlreadyStarted = errors.New("already started")
 	ErrAlreadyEnded   = errors.New("already ended")
+	ErrKilled         = errors.New("killed")
 )
 
 type worker[T any] struct {

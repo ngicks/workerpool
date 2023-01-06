@@ -7,12 +7,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/ngicks/workerpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TODO: improve readability of overall tests.
 
 type idParam struct {
 	Id int
@@ -411,4 +414,89 @@ func TestWorker_killed_when_work_fn_call_Goexit(t *testing.T) {
 	<-sw
 	assert.True(worker.IsEnded())
 	assert.False(worker.IsRunning())
+}
+
+func TestWorker_pause(t *testing.T) {
+	assert := assert.New(t)
+
+	w := &workFn{}
+	w.init()
+	recorder := &recorderHook{}
+	paramCh := make(chan idParam)
+
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](w.fn),
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sw := make(chan struct{})
+	go func() {
+		<-sw
+		worker.Run(ctx)
+		close(sw)
+	}()
+	sw <- struct{}{}
+	defer func() {
+		<-sw
+	}()
+	defer cancel()
+
+	cont, err := worker.Pause(context.Background())
+	assert.NoError(err)
+
+	dur := time.Millisecond
+	select {
+	case paramCh <- idParam{0}:
+		t.Errorf("paramCh must not receive until continueWorker is called")
+	case <-time.After(dur):
+	}
+
+	cont()
+
+	timeout := time.Second
+	select {
+	case paramCh <- idParam{0}:
+		w.step()
+	case <-time.After(timeout):
+		t.Errorf(
+			"paramCh must receive after continueWorker is called, but still not receive after %s",
+			timeout,
+		)
+	}
+
+	paramCh <- idParam{1}
+
+	pauseCtx, cancelPause := context.WithCancel(context.Background())
+	go func() { cancelPause() }()
+	cont, err = worker.Pause(pauseCtx)
+	assert.ErrorIs(err, context.Canceled)
+	assert.Nil(cont)
+
+	w.step()
+
+	// After Pause returns, cancelling context is no-op.
+	pauseCtx, cancelPause = context.WithCancel(context.Background())
+	cont, err = worker.Pause(pauseCtx)
+	cancelPause()
+	assert.NoError(err)
+	assert.NotNil(cont)
+	cont()
+
+	// after cancelling pause, worker works normally.
+	paramCh <- idParam{3}
+	<-w.blocked
+	w.step()
+
+	paramCh <- idParam{4}
+	defer w.step()
+	go func() {
+		<-time.After(time.Millisecond)
+		worker.Kill()
+	}()
+	cont, err = worker.Pause(context.Background())
+	assert.ErrorIs(err, workerpool.ErrKilled)
+	assert.Nil(cont)
 }

@@ -26,7 +26,9 @@ type Worker[T any] struct {
 	isRunning atomic.Int32
 	isEnded   atomic.Int32
 
-	killCh         chan struct{}
+	killCh  chan struct{}
+	pauseCh chan func()
+
 	fn             WorkExecuter[T]
 	paramCh        <-chan T
 	onTaskReceived func(param T)
@@ -49,6 +51,7 @@ func NewWorker[T any](
 
 	return Worker[T]{
 		killCh:         make(chan struct{}),
+		pauseCh:        make(chan func()),
 		fn:             fn,
 		paramCh:        paramCh,
 		onTaskReceived: onTaskReceived,
@@ -98,6 +101,8 @@ loop:
 				break loop
 			case <-ctx.Done():
 				break loop
+			case pauseFn := <-w.pauseCh:
+				pauseFn()
 			case param, ok := <-w.paramCh:
 				if !ok {
 					w.setEnded()
@@ -130,6 +135,47 @@ loop:
 	normalReturn = true
 	// killed will be mutated again in defer func.
 	return killed, nil
+}
+
+func (w *Worker[T]) Pause(ctx context.Context) (continueWorker func(), err error) {
+	called := make(chan struct{})
+	continueCh := make(chan struct{})
+
+	wait := make(chan struct{})
+	defer func() {
+		<-wait
+	}()
+
+	goroutines.Add(1)
+	go func() {
+		pauseFn := func() {
+			close(called)
+			<-continueCh
+		}
+
+		select {
+		case w.pauseCh <- pauseFn:
+		case <-w.killCh:
+		case <-ctx.Done():
+		}
+		goroutines.Add(-1)
+		close(wait)
+	}()
+
+	select {
+	case <-called:
+	case <-w.killCh:
+		close(continueCh)
+		return nil, ErrKilled
+	case <-ctx.Done():
+		close(continueCh)
+		return nil, ctx.Err()
+	}
+
+	return func() {
+		close(continueCh)
+	}, nil
+
 }
 
 // Kill kills this worker.
