@@ -6,7 +6,7 @@ import (
 
 // Option is an option that changes WorkerPool instance.
 // This can be used in NewWorkerPool.
-type Option[T any] func(w *WorkerPool[T]) *WorkerPool[T]
+type Option[T any] func(w *WorkerPool[T])
 
 // SetDefaultAbnormalReturnCb is an Option that
 // overrides abnormal-return cb with cb.
@@ -17,9 +17,8 @@ func SetAbnormalReturnCb[T any](cb func(err error)) Option[T] {
 	if cb == nil {
 		panic("cb is nil")
 	}
-	return func(w *WorkerPool[T]) *WorkerPool[T] {
+	return func(w *WorkerPool[T]) {
 		w.abnormalReturnCb = cb
-		return w
 	}
 }
 
@@ -31,9 +30,8 @@ func SetAbnormalReturnCb[T any](cb func(err error)) Option[T] {
 // cb is called if and only if Worker returned abnormally.
 // cb may be called multiple times, simultaneously.
 func SetLogOnAbnormalReturn[T any]() Option[T] {
-	return func(w *WorkerPool[T]) *WorkerPool[T] {
+	return func(w *WorkerPool[T]) {
 		w.abnormalReturnCb = func(err error) { log.Println(err) }
-		return w
 	}
 }
 
@@ -49,9 +47,8 @@ func SetWorkerConstructor[T any](
 	if workerConstructor == nil {
 		panic("workerConstructor is nil")
 	}
-	return func(w *WorkerPool[T]) *WorkerPool[T] {
+	return func(w *WorkerPool[T]) {
 		w.paramCh = paramCh
 		w.workerConstructor = workerConstructor
-		return w
 	}
 }
