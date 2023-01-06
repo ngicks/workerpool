@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -103,7 +104,12 @@ func TestWorker(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker(w.fn, paramCh, recorder.onTaskReceived, recorder.onTaskDone)
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](w.fn),
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
 
 	require.False(worker.IsRunning(), "IsRunning is true. want == false. it's just created.")
 	require.False(worker.IsEnded(), "IsEnded is true. want == false, it's just created.")
@@ -229,7 +235,12 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker(w.fn, paramCh, recorder.onTaskReceived, recorder.onTaskDone)
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](w.fn),
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
 
 	var killed bool
 	var err error
@@ -279,7 +290,12 @@ func TestWorker_killed_when_paramCh_is_closed(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker(w.fn, paramCh, recorder.onTaskReceived, recorder.onTaskDone)
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](w.fn),
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
 
 	var killed bool
 	var err error
@@ -318,15 +334,21 @@ func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker(w.fn, paramCh, recorder.onTaskReceived, recorder.onTaskDone)
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](w.fn),
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
 
 	var killed bool
 	var err error
-	var recovered any
+	var recovered atomic.Pointer[any]
 	sw := make(chan struct{})
 	go func() {
 		defer func() {
-			recovered = recover()
+			recv := recover()
+			recovered.Store(&recv)
 		}()
 		defer func() {
 			close(sw)
@@ -350,8 +372,8 @@ func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
 	assert.True(worker.IsEnded())
 	assert.False(worker.IsRunning())
 	assert.NoError(err)
-	assert.NotNil(recovered)
-	assert.Equal(recovered.(string), "foo")
+	assert.NotNil(*recovered.Load())
+	assert.Equal((*recovered.Load()).(string), "foo")
 }
 
 func TestWorker_killed_when_work_fn_call_Goexit(t *testing.T) {
@@ -360,8 +382,10 @@ func TestWorker_killed_when_work_fn_call_Goexit(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker(
-		func(context.Context, idParam) error { runtime.Goexit(); return nil },
+	worker := workerpool.NewWorker[idParam](
+		workerpool.WorkFn[idParam](
+			func(context.Context, idParam) error { runtime.Goexit(); return nil },
+		),
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,

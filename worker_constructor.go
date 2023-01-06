@@ -33,6 +33,6 @@ func DefaultWorkerConstructor[T any](
 				onTaskDone_(param, err)
 			}
 		}
-		return NewWorker(workFn, paramCh, combinedOnTaskReceived, combinedOnTaskDone)
+		return NewWorker[T](WorkFn[T](workFn), paramCh, combinedOnTaskReceived, combinedOnTaskDone)
 	}
 }

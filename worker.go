@@ -5,6 +5,18 @@ import (
 	"sync/atomic"
 )
 
+type WorkExecuter[T any] interface {
+	Exec(ctx context.Context, param T) error
+}
+
+type WorkFn[T any] func(ctx context.Context, param T) error
+
+func (w WorkFn[T]) Exec(ctx context.Context, param T) error {
+	return w(ctx, param)
+}
+
+var _ WorkExecuter[int] = WorkFn[int](nil)
+
 // Worker represents a single task executor.
 // It works on a single task at a time.
 // It may be in stopped-state where loop is stopped,
@@ -15,7 +27,7 @@ type Worker[T any] struct {
 	isEnded   atomic.Int32
 
 	killCh         chan struct{}
-	workFn         func(ctx context.Context, param T) error
+	fn             WorkExecuter[T]
 	paramCh        <-chan T
 	onTaskReceived func(param T)
 	onTaskDone     func(param T, err error)
@@ -23,7 +35,7 @@ type Worker[T any] struct {
 }
 
 func NewWorker[T any](
-	workFn func(ctx context.Context, param T) error,
+	fn WorkExecuter[T],
 	paramCh <-chan T,
 	onTaskReceived func(param T),
 	onTaskDone func(param T, err error),
@@ -37,7 +49,7 @@ func NewWorker[T any](
 
 	return Worker[T]{
 		killCh:         make(chan struct{}),
-		workFn:         workFn,
+		fn:             fn,
 		paramCh:        paramCh,
 		onTaskReceived: onTaskReceived,
 		onTaskDone:     onTaskDone,
@@ -109,7 +121,7 @@ loop:
 					var err error
 					w.onTaskReceived(param)
 					defer func() { w.onTaskDone(param, err) }()
-					err = w.workFn(ctx, param)
+					err = w.fn.Exec(ctx, param)
 				}()
 			}
 		}
