@@ -1,4 +1,4 @@
-package workerpool_test
+package workerpool
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/ngicks/workerpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,6 +18,15 @@ import (
 
 type idParam struct {
 	Id int
+}
+
+func createIdParamFactory() func() idParam {
+	count := 0
+	return func() idParam {
+		p := idParam{count}
+		count++
+		return p
+	}
 }
 
 type ErrInt int
@@ -33,15 +41,26 @@ type workFnArg struct {
 }
 
 type workFn struct {
+	sync.Mutex
+
 	args    []workFnArg
-	blocked chan struct{}
+	called  chan struct{}
 	stepper chan struct{}
 
-	panicLabel string
+	panicLabel   any
+	onCalledHook func()
+}
+
+func (w *workFn) MustPanicWith(panicLabel any) {
+	if panicLabel == nil {
+		w.panicLabel = nil
+	} else {
+		w.panicLabel = panicLabel
+	}
 }
 
 func (w *workFn) init() {
-	w.blocked = make(chan struct{}, 1)
+	w.called = make(chan struct{}, 1)
 	w.stepper = make(chan struct{})
 }
 
@@ -49,21 +68,26 @@ func (w *workFn) step() {
 	w.stepper <- struct{}{}
 }
 
-func (w *workFn) fn(ctx context.Context, param idParam) error {
+func (w *workFn) Exec(ctx context.Context, param idParam) error {
 	select {
-	case w.blocked <- struct{}{}:
+	case w.called <- struct{}{}:
 	default:
 	}
 
-	if w.panicLabel != "" {
+	if w.panicLabel != nil {
 		panic(w.panicLabel)
+	}
+	if w.onCalledHook != nil {
+		w.onCalledHook()
 	}
 	<-w.stepper
 
+	w.Lock()
 	w.args = append(w.args, workFnArg{
 		Param:            param,
 		ContextCancelled: ctx.Err() != nil,
 	})
+	w.Unlock()
 
 	return ErrInt(param.Id)
 }
@@ -75,27 +99,42 @@ type doneArg struct {
 
 type recorderHook struct {
 	sync.Mutex
+	onReceive    chan struct{}
+	onDone       chan struct{}
 	receivedArgs []idParam
 	doneArgs     []doneArg
 }
 
+func (r *recorderHook) init() {
+	r.onReceive = make(chan struct{})
+	r.onDone = make(chan struct{})
+}
+
 func (r *recorderHook) onTaskReceived(param idParam) {
 	r.Lock()
-	defer r.Unlock()
-
 	r.receivedArgs = append(r.receivedArgs, param)
+	r.Unlock()
+
+	select {
+	case r.onReceive <- struct{}{}:
+	default:
+	}
 }
 
 func (r *recorderHook) onTaskDone(param idParam, err error) {
 	r.Lock()
-	defer r.Unlock()
-
 	r.doneArgs = append(r.doneArgs,
 		doneArg{
 			Param: param,
 			Err:   err,
 		},
 	)
+	defer r.Unlock()
+
+	select {
+	case r.onDone <- struct{}{}:
+	default:
+	}
 }
 
 func TestWorker(t *testing.T) {
@@ -107,8 +146,8 @@ func TestWorker(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](w.fn),
+	worker := NewWorker[idParam](
+		w,
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
@@ -133,13 +172,13 @@ func TestWorker(t *testing.T) {
 
 	var err error
 	_, err = worker.Run(context.TODO())
-	assert.ErrorIs(err, workerpool.ErrAlreadyStarted)
+	assert.ErrorIs(err, ErrAlreadyRunning)
 
 	assert.True(worker.IsRunning())
 	assert.False(worker.IsEnded())
 
 	paramCh <- idParam{0}
-	<-w.blocked
+	<-w.called
 
 	assertCallCount := func(workFn, onTaskReceive, onTaskDone int) {
 		t.Helper()
@@ -168,7 +207,7 @@ func TestWorker(t *testing.T) {
 	w.step()
 
 	paramCh <- idParam{1}
-	<-w.blocked
+	<-w.called
 
 	assertCallCount(1, 2, 1)
 
@@ -200,7 +239,7 @@ func TestWorker(t *testing.T) {
 	assert.True(worker.IsRunning())
 	assert.False(worker.IsEnded())
 
-	<-w.blocked
+	<-w.called
 	w.step()
 	cancel2()
 	<-sw2
@@ -238,8 +277,8 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](w.fn),
+	worker := NewWorker[idParam](
+		w,
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
@@ -261,7 +300,7 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	}()
 
 	paramCh <- idParam{}
-	<-w.blocked
+	<-w.called
 	worker.Kill()
 	assert.True(worker.IsRunning())
 	assert.True(worker.IsEnded())
@@ -276,7 +315,7 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	require.True(w.args[0].ContextCancelled)
 
 	_, err = worker.Run(context.TODO())
-	require.ErrorIs(err, workerpool.ErrAlreadyEnded)
+	require.ErrorIs(err, ErrAlreadyEnded)
 
 	// ensure this does not panic.
 	worker.Kill()
@@ -284,7 +323,7 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	worker.Kill()
 }
 
-func TestWorker_killed_when_paramCh_is_closed(t *testing.T) {
+func TestWorker_killed_when_taskCh_is_closed(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -293,8 +332,8 @@ func TestWorker_killed_when_paramCh_is_closed(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](w.fn),
+	worker := NewWorker[idParam](
+		w,
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
@@ -316,8 +355,9 @@ func TestWorker_killed_when_paramCh_is_closed(t *testing.T) {
 	}()
 	defer worker.Kill()
 
-	assert.True(worker.IsRunning())
 	paramCh <- idParam{}
+	<-w.called
+	assert.True(worker.IsRunning())
 	w.step()
 	close(paramCh)
 
@@ -327,7 +367,7 @@ func TestWorker_killed_when_paramCh_is_closed(t *testing.T) {
 	require.NoError(err)
 }
 
-func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
+func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 	assert := assert.New(t)
 
 	w := &workFn{}
@@ -337,8 +377,8 @@ func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](w.fn),
+	worker := NewWorker[idParam](
+		w,
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
@@ -368,7 +408,7 @@ func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
 
 	paramCh <- idParam{}
 
-	<-w.blocked
+	<-w.called
 
 	<-sw
 	assert.False(killed)
@@ -379,14 +419,14 @@ func TestWorker_killed_when_work_fn_panicking(t *testing.T) {
 	assert.Equal((*recovered.Load()).(string), "foo")
 }
 
-func TestWorker_killed_when_work_fn_call_Goexit(t *testing.T) {
+func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 	assert := assert.New(t)
 
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](
+	worker := NewWorker[idParam](
+		WorkFn[idParam](
 			func(context.Context, idParam) error { runtime.Goexit(); return nil },
 		),
 		paramCh,
@@ -424,8 +464,8 @@ func TestWorker_pause(t *testing.T) {
 	recorder := &recorderHook{}
 	paramCh := make(chan idParam)
 
-	worker := workerpool.NewWorker[idParam](
-		workerpool.WorkFn[idParam](w.fn),
+	worker := NewWorker[idParam](
+		w,
 		paramCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
@@ -444,7 +484,7 @@ func TestWorker_pause(t *testing.T) {
 	}()
 	defer cancel()
 
-	cont, err := worker.Pause(context.Background())
+	cont, err := worker.Pause(context.Background(), time.Hour)
 	assert.NoError(err)
 
 	dur := time.Millisecond
@@ -471,7 +511,7 @@ func TestWorker_pause(t *testing.T) {
 
 	pauseCtx, cancelPause := context.WithCancel(context.Background())
 	go func() { cancelPause() }()
-	cont, err = worker.Pause(pauseCtx)
+	cont, err = worker.Pause(pauseCtx, time.Hour)
 	assert.ErrorIs(err, context.Canceled)
 	assert.Nil(cont)
 
@@ -479,24 +519,157 @@ func TestWorker_pause(t *testing.T) {
 
 	// After Pause returns, cancelling context is no-op.
 	pauseCtx, cancelPause = context.WithCancel(context.Background())
-	cont, err = worker.Pause(pauseCtx)
+	cont, err = worker.Pause(pauseCtx, time.Hour)
 	cancelPause()
 	assert.NoError(err)
 	assert.NotNil(cont)
-	cont()
+	assert.True(cont(), "continueWorker must return true if it is called first time.")
+
+	// It's safe to call continueWorker multiple. (not concurrently)
+	for i := 0; i < 10; i++ {
+		assert.False(cont(), "continueWorker must return false if it is second or more call.")
+	}
 
 	// after cancelling pause, worker works normally.
 	paramCh <- idParam{3}
-	<-w.blocked
+	<-w.called
 	w.step()
 
-	paramCh <- idParam{4}
+	// pause is released after timeout duration.
+	cont, err = worker.Pause(context.Background(), time.Microsecond)
+	assert.NoError(err)
+	assert.NotNil(cont)
+
+	race := make(chan struct{})
+	go func() {
+		<-race
+		paramCh <- idParam{4}
+		<-w.called
+		w.step()
+		close(race)
+	}()
+	race <- struct{}{}
+
+	select {
+	case <-race:
+	case <-time.After(time.Millisecond):
+		t.Errorf("Pause must be released after timeout duration, but did not")
+	}
+
+	assert.False(cont(), "After Pause timed-out, continueWorker must return false")
+
+	paramCh <- idParam{5}
 	defer w.step()
+
 	go func() {
 		<-time.After(time.Millisecond)
 		worker.Kill()
 	}()
-	cont, err = worker.Pause(context.Background())
-	assert.ErrorIs(err, workerpool.ErrKilled)
+	cont, err = worker.Pause(context.Background(), time.Hour)
+
+	assert.ErrorIs(err, ErrKilled)
 	assert.Nil(cont)
+
+	cont, err = worker.Pause(context.Background(), time.Hour)
+	assert.ErrorIs(err, ErrKilled)
+	assert.Nil(cont)
+}
+
+func TestWorker_pause_is_released_immediately_after_Kill(t *testing.T) {
+	assert := assert.New(t)
+
+	w := &workFn{}
+	w.init()
+	recorder := &recorderHook{}
+	paramCh := make(chan idParam)
+
+	worker := NewWorker[idParam](
+		w,
+		paramCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sw := make(chan struct{})
+	go func() {
+		<-sw
+		worker.Run(ctx)
+		close(sw)
+	}()
+	sw <- struct{}{}
+	defer func() {
+		<-sw
+	}()
+	defer cancel()
+
+	cont, err := worker.Pause(context.Background(), time.Hour)
+	assert.NotNil(cont)
+	assert.NoError(err)
+
+	worker.Kill()
+
+	select {
+	case <-time.After(10 * time.Millisecond):
+		t.Errorf("Pause is not released, after an invocation of Kill")
+	case <-sw:
+	}
+
+	assert.False(cont(), "continueWorker must return false after an invocation of Kill")
+}
+
+func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
+	assert := assert.New(t)
+
+	w := &workFn{}
+	w.init()
+	recorder := &recorderHook{}
+	taskCh := make(chan idParam)
+
+	worker := NewWorker[idParam](
+		w,
+		taskCh,
+		recorder.onTaskReceived,
+		recorder.onTaskDone,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sw := make(chan struct{})
+	go func() {
+		<-sw
+		worker.Run(ctx)
+		close(sw)
+	}()
+	sw <- struct{}{}
+	defer func() {
+		<-sw
+	}()
+	defer cancel()
+
+	pauseCtx, pauseCancel := context.WithCancel(context.Background())
+	cont, err := worker.Pause(pauseCtx, 5*time.Millisecond)
+	assert.NotNil(cont)
+	assert.NoError(err)
+
+	pauseCancel()
+
+	dur := time.Millisecond
+	select {
+	case taskCh <- idParam{}:
+		w.step()
+		t.Errorf("cancelling ctx after Pause returned must be no-op." +
+			" However taskCh is received")
+	case <-time.After(dur):
+	}
+
+	dur = 10 * time.Millisecond
+	select {
+	case taskCh <- idParam{}:
+		w.step()
+	case <-time.After(dur):
+		t.Errorf("cancelling ctx after Pause returned must be no-op."+
+			" But timeout is not working. %s passed", dur)
+	}
+
+	assert.False(cont())
 }
