@@ -33,15 +33,10 @@ type worker[T any] struct {
 }
 
 func (w *worker[T]) SetCancelFn(fn context.CancelFunc) {
-	w.Lock()
 	w.cancelFn = fn
-	w.Unlock()
 }
 
 func (w *worker[T]) Cancel() {
-	w.Lock()
-	defer w.Unlock()
-
 	if w.cancelFn != nil {
 		w.cancelFn()
 	}
@@ -111,11 +106,15 @@ func (p *Pool[T]) Add(delta int) {
 	for i := 0; i < delta; i++ {
 		worker := p.constructor.Build()
 		p.wg.Add(1)
+
+		runCtx, cancel := context.WithCancel(context.Background())
+		worker.SetCancelFn(cancel)
 		p.workers.Set(worker.id, worker)
 
 		go func() {
 			defer p.wg.Done()
-			p.runWorker(worker, true, p.onAbnormalReturn)
+			defer cancel()
+			p.runWorker(runCtx, worker, true, p.onAbnormalReturn)
 		}()
 	}
 }
@@ -135,15 +134,13 @@ func (p *panicErr) Error() string {
 }
 
 func (p *Pool[T]) runWorker(
+	ctx context.Context,
 	worker *worker[T],
 	shouldRecover bool,
 	abnormalReturnCb func(error),
 ) (workerErr error) {
 	var normalReturn, recovered bool
 	var abnormalReturnErr error
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// see https://cs.opensource.google/go/x/sync/+/0de741cf:singleflight/singleflight.go;l=138-200;drc=0de741cfad7ff3874b219dfbc1b9195b58c7c490
 	defer func() {
@@ -177,7 +174,6 @@ func (p *Pool[T]) runWorker(
 			}
 		}()
 
-		worker.SetCancelFn(cancel)
 		_, workerErr = worker.Run(ctx)
 		normalReturn = true
 	}()

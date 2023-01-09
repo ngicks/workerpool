@@ -192,13 +192,12 @@ func TestPool(t *testing.T) {
 	assertWorkerNum(10, 0)
 	assertActiveWorker(3)
 
-	var timedOut atomic.Int32
 	waiter = createRepeatedWaiter(
 		func() {
 			select {
 			case <-pool.workerEndCh:
 			case <-time.After(500 * time.Millisecond):
-				timedOut.CompareAndSwap(0, 1)
+				t.Logf("Remove: timed out reporting on pool.workerEndCh")
 			}
 		},
 		7,
@@ -206,12 +205,8 @@ func TestPool(t *testing.T) {
 	pool.Remove(10)
 	waiter()
 
-	if timedOut.Load() != 0 {
-		t.Logf("internal timed-out")
-	}
-
 	if !assertWorkerNum(0, 3) {
-		t.Fatalf("workers must be held as sleeping state," +
+		t.Errorf("workers must be held as sleeping state," +
 			" where a worker is not pulling new task but is still working on its task")
 	}
 	assertActiveWorker(3)
