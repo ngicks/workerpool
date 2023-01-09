@@ -1,6 +1,7 @@
 package workerpool
 
 import (
+	"context"
 	"runtime"
 	"strings"
 	"sync"
@@ -8,39 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngicks/gommon/pkg/timing"
 	"github.com/ngicks/type-param-common/slice"
 	"github.com/stretchr/testify/assert"
 )
-
-// return a waiter, where caller can be blocked until passed fn's return.
-func createWaiter(fn ...func()) (waiter func()) {
-	var wg sync.WaitGroup
-
-	sw := make(chan struct{})
-	for _, f := range fn {
-		wg.Add(1)
-		go func(fn func()) {
-			<-sw
-			defer wg.Done()
-			fn()
-		}(f)
-	}
-
-	for i := 0; i < len(fn); i++ {
-		sw <- struct{}{}
-	}
-
-	return wg.Wait
-}
-
-func createRepeatedWaiter(fn func(), repeat int) (waiter func()) {
-	repeated := make([]func(), repeat)
-	for i := 0; i < repeat; i++ {
-		repeated[i] = fn
-	}
-
-	return createWaiter(repeated...)
-}
 
 func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int) }) func(alive, sleeping int) bool {
 	return func(alive, sleeping int) bool {
@@ -96,7 +68,6 @@ func TestPool(t *testing.T) {
 	recorderHook.init()
 
 	pool := New[idParam](w, SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone))
-	pool.workerEndCh = make(chan string, 100)
 
 	assertWorkerNum := createAssertWorkerNum(t, pool)
 	assertActiveWorker := createAssertActiveWorker(t, pool)
@@ -121,7 +92,7 @@ func TestPool(t *testing.T) {
 	assertWorkerNum(5, 0)
 
 	for i := 0; i < 3; i++ {
-		waiter := createWaiter(func() { <-w.called })
+		waiter := timing.CreateWaiterFn(func() { <-w.called })
 		pool.Sender() <- idParamFactory()
 		waiter()
 	}
@@ -134,7 +105,7 @@ func TestPool(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		waiter := createWaiter(func() { <-recorderHook.onDone })
+		waiter := timing.CreateWaiterFn(func() { <-recorderHook.onDone })
 		w.step()
 		waiter()
 	}
@@ -143,7 +114,7 @@ func TestPool(t *testing.T) {
 	assertActiveWorker(0)
 
 	for i := 0; i < 5; i++ {
-		waiter := createWaiter(func() { <-w.called })
+		waiter := timing.CreateWaiterFn(func() { <-w.called })
 		pool.Sender() <- idParamFactory()
 		waiter()
 	}
@@ -157,7 +128,7 @@ func TestPool(t *testing.T) {
 	case <-time.After(time.Millisecond):
 	}
 
-	waiter := createWaiter(func() { <-w.called })
+	waiter := timing.CreateWaiterFn(func() { <-w.called })
 
 	// You must do tricks like this to ensure runtime switched context to the newly created goroutine.
 	switchCh := make(chan struct{})
@@ -176,7 +147,7 @@ func TestPool(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		waiter := createWaiter(func() { <-recorderHook.onDone })
+		waiter := timing.CreateWaiterFn(func() { <-recorderHook.onDone })
 		w.step()
 		waiter()
 	}
@@ -192,18 +163,12 @@ func TestPool(t *testing.T) {
 	assertWorkerNum(10, 0)
 	assertActiveWorker(3)
 
-	waiter = createRepeatedWaiter(
-		func() {
-			select {
-			case <-pool.workerEndCh:
-			case <-time.After(500 * time.Millisecond):
-				t.Logf("Remove: timed out reporting on pool.workerEndCh")
-			}
-		},
-		7,
-	)
 	pool.Remove(10)
-	waiter()
+
+	timing.PollUntil(func(context.Context) bool {
+		alive, sleeping := pool.Len()
+		return alive == 0 && sleeping == 3
+	}, 50*time.Millisecond, 3*time.Second)
 
 	if !assertWorkerNum(0, 3) {
 		t.Errorf("workers must be held as sleeping state," +
@@ -212,7 +177,7 @@ func TestPool(t *testing.T) {
 	assertActiveWorker(3)
 
 	for i := 0; i < 3; i++ {
-		waiter := createWaiter(func() { <-recorderHook.onDone })
+		waiter := timing.CreateWaiterFn(func() { <-recorderHook.onDone })
 		w.step()
 		waiter()
 	}
@@ -246,14 +211,11 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 			errorStackMu.Unlock()
 		}),
 	)
-	pool.workerEndCh = make(chan string)
 
 	pool.Add(10)
 
 	label := "njgnmopjp0iadjkpwac08jjmw;da;"
 	w.MustPanicWith(label)
-
-	waiter := createWaiter(func() { <-pool.workerEndCh })
 
 	switchCh := make(chan struct{})
 	go func() {
@@ -267,7 +229,10 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	waiter()
+	timing.PollUntil(func(context.Context) bool {
+		alive, sleeping := pool.Len()
+		return alive == 9 && sleeping == 0
+	}, 50*time.Millisecond, 2*time.Second)
 
 	errorStackMu.Lock()
 	lastErr, _ := errorStack.PopBack()
@@ -283,8 +248,6 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 		runtime.Goexit()
 	}
 
-	waiter = createWaiter(func() { <-pool.workerEndCh })
-
 	switchCh = make(chan struct{})
 	go func() {
 		<-switchCh
@@ -297,7 +260,10 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	waiter()
+	timing.PollUntil(func(context.Context) bool {
+		alive, sleeping := pool.Len()
+		return alive == 8 && sleeping == 0
+	}, 50*time.Millisecond, 2*time.Second)
 
 	if !called.Load() {
 		t.Fatalf("incorrect test implementation: onCalledHook is not called")
@@ -310,4 +276,7 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	if errStr := lastErr.Error(); !strings.Contains(errStr, label) {
 		t.Fatalf("err message not containing %s, but actually is %s", label, errStr)
 	}
+
+	pool.Kill()
+	pool.Wait()
 }

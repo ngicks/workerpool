@@ -53,7 +53,6 @@ type Pool[T any] struct {
 	workerMu        sync.Mutex
 	workers         *orderedmap.OrderedMap[string, *worker[T]]
 	sleepingWorkers map[string]*worker[T]
-	workerEndCh     chan string
 
 	constructor      workerConstructor[T]
 	onAbnormalReturn func(error)
@@ -148,10 +147,6 @@ func (p *Pool[T]) runWorker(
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
 		p.workerMu.Unlock()
-
-		if p.workerEndCh != nil {
-			p.workerEndCh <- worker.id
-		}
 
 		if !normalReturn && !recovered {
 			abnormalReturnErr = errGoexit

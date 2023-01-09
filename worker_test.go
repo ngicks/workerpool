@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/ngicks/gommon/pkg/timing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -234,7 +235,7 @@ func TestWorker(t *testing.T) {
 	assert.True(worker.IsRunning())
 	assert.False(worker.IsEnded())
 
-	waiter := createWaiter(func() { <-workExec.called })
+	waiter := timing.CreateWaiterFn(func() { <-workExec.called })
 	taskCh <- idParam{0}
 	waiter()
 
