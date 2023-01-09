@@ -228,6 +228,11 @@ func TestWorker(t *testing.T) {
 		_,
 		closedOnRunReturn := runWorker(worker.Run)
 
+	// reducing race condition
+	timing.PollUntil(func(ctx context.Context) bool {
+		return worker.IsRunning()
+	}, time.Millisecond, time.Second)
+
 	var err error
 	_, err = worker.Run(context.TODO())
 	assert.ErrorIs(err, ErrAlreadyRunning)
@@ -272,6 +277,7 @@ func TestWorker(t *testing.T) {
 
 	workExec.step()
 
+	// observing run returning
 	cancelRun()
 	<-closedOnRunReturn
 
@@ -280,6 +286,7 @@ func TestWorker(t *testing.T) {
 
 	assertCallCount(2, 2, 2)
 
+	// re-run
 	_, cancelRun, _, closedOnRunReturn = runWorker(worker.Run)
 
 	taskCh <- idParam{2}
