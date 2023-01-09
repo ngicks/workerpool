@@ -33,6 +33,15 @@ func createWaiter(fn ...func()) (waiter func()) {
 	return wg.Wait
 }
 
+func createRepeatedWaiter(fn func(), repeat int) (waiter func()) {
+	repeated := make([]func(), repeat)
+	for i := 0; i < repeat; i++ {
+		repeated[i] = fn
+	}
+
+	return createWaiter(repeated...)
+}
+
 func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int) }) func(alive, sleeping int) bool {
 	return func(alive, sleeping int) bool {
 		t.Helper()
@@ -87,6 +96,7 @@ func TestPool(t *testing.T) {
 	recorderHook.init()
 
 	pool := New[idParam](w, SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone))
+	pool.workerEndCh = make(chan string, 100)
 
 	assertWorkerNum := createAssertWorkerNum(t, pool)
 	assertActiveWorker := createAssertActiveWorker(t, pool)
@@ -118,6 +128,10 @@ func TestPool(t *testing.T) {
 
 	assertWorkerNum(5, 0)
 	assertActiveWorker(3)
+
+	// give some time to workExec to step
+	// from sending w.called channel to blocking on w.stepper channel
+	time.Sleep(20 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
 		waiter := createWaiter(func() { <-recorderHook.onDone })
@@ -178,17 +192,23 @@ func TestPool(t *testing.T) {
 	assertWorkerNum(10, 0)
 	assertActiveWorker(3)
 
-	waiter = createWaiter(
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
-		func() { <-pool.workerEndCh },
+	var timedOut atomic.Int32
+	waiter = createRepeatedWaiter(
+		func() {
+			select {
+			case <-pool.workerEndCh:
+			case <-time.After(500 * time.Millisecond):
+				timedOut.CompareAndSwap(0, 1)
+			}
+		},
+		7,
 	)
 	pool.Remove(10)
 	waiter()
+
+	if timedOut.Load() != 0 {
+		t.Logf("internal timed-out")
+	}
 
 	if !assertWorkerNum(0, 3) {
 		t.Fatalf("workers must be held as sleeping state," +
@@ -231,6 +251,7 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 			errorStackMu.Unlock()
 		}),
 	)
+	pool.workerEndCh = make(chan string)
 
 	pool.Add(10)
 

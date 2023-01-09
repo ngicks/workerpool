@@ -61,7 +61,7 @@ func (w *workFn) MustPanicWith(panicLabel any) {
 
 func (w *workFn) init() {
 	w.called = make(chan struct{}, 1)
-	w.stepper = make(chan struct{})
+	w.stepper = make(chan struct{}) // stepper must block
 }
 
 // step unblocks Exec.
@@ -81,7 +81,9 @@ func (w *workFn) Exec(ctx context.Context, param idParam) error {
 	if w.onCalledHook != nil {
 		w.onCalledHook()
 	}
+	// log.Println("blocking on stepper")
 	<-w.stepper
+	// log.Println("received from stepper")
 
 	w.Lock()
 	w.args = append(w.args, workFnArg{
@@ -107,8 +109,8 @@ type recorderHook struct {
 }
 
 func (r *recorderHook) init() {
-	r.onReceive = make(chan struct{})
-	r.onDone = make(chan struct{})
+	r.onReceive = make(chan struct{}, 1) // buffering these channel ease race condition
+	r.onDone = make(chan struct{}, 1)
 }
 
 func (r *recorderHook) onTaskReceived(param idParam) {

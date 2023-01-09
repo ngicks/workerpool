@@ -73,7 +73,6 @@ func New[T any](
 		taskCh:           make(chan T),
 		workers:          orderedmap.New[string, *worker[T]](),
 		sleepingWorkers:  make(map[string]*worker[T]),
-		workerEndCh:      make(chan string, 50),
 		onAbnormalReturn: func(err error) {},
 	}
 
@@ -151,11 +150,11 @@ func (p *Pool[T]) runWorker(
 		p.workerMu.Lock()
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
-		select {
-		case p.workerEndCh <- worker.id:
-		default:
-		}
 		p.workerMu.Unlock()
+
+		if p.workerEndCh != nil {
+			p.workerEndCh <- worker.id
+		}
 
 		if !normalReturn && !recovered {
 			abnormalReturnErr = errGoexit
