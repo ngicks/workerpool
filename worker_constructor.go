@@ -7,7 +7,7 @@ type workerConstructor[T any] struct {
 	Exec          WorkExecuter[T]
 	OnReceive     func(p T)
 	OnDone        func(p T, err error)
-	ParamCh       chan T
+	TaskCh        chan T
 	recordReceive func(p T)
 	recordDone    func(p T, err error)
 }
@@ -36,5 +36,5 @@ func (p *workerConstructor[T]) build() Worker[T] {
 			p.OnDone(param, err)
 		}
 	}
-	return NewWorker(p.Exec, p.ParamCh, combinedOnTaskReceived, combinedOnTaskDone)
+	return NewWorker(p.Exec, p.TaskCh, combinedOnTaskReceived, combinedOnTaskDone)
 }

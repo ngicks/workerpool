@@ -33,45 +33,6 @@ func createWaiter(fn ...func()) (waiter func()) {
 	return wg.Wait
 }
 
-func pollUntil(predicate func() bool, interval time.Duration, timeout time.Duration) (ok bool) {
-	doneCh := make(chan struct{})
-
-	done := func() {
-		select {
-		case <-doneCh:
-			return
-		default:
-			close(doneCh)
-		}
-	}
-
-	go func() {
-		for {
-			select {
-			case <-doneCh:
-				return
-			default:
-			}
-			if predicate() {
-				break
-			}
-			time.Sleep(interval)
-		}
-		done()
-	}()
-
-	t := timerFactory()
-	t.Reset(timeout)
-	defer t.Stop()
-	select {
-	case <-doneCh:
-		return true
-	case <-t.Channel():
-		done()
-		return false
-	}
-}
-
 func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int) }) func(alive, sleeping int) bool {
 	return func(alive, sleeping int) bool {
 		t.Helper()
@@ -104,7 +65,7 @@ func createAssertActiveWorker(t *testing.T, pool interface{ ActiveWorkerNum() in
 	}
 }
 
-func TestWorkerPool(t *testing.T) {
+func TestPool(t *testing.T) {
 	idParamFactory := createIdParamFactory()
 
 	w := &workFn{}
@@ -184,7 +145,7 @@ func TestWorkerPool(t *testing.T) {
 
 	waiter := createWaiter(func() { <-w.called })
 
-	// You must do tricks like this to ensure runtime switched context to the a newly created goroutine.
+	// You must do tricks like this to ensure runtime switched context to the newly created goroutine.
 	switchCh := make(chan struct{})
 	go func() {
 		<-switchCh
@@ -217,22 +178,21 @@ func TestWorkerPool(t *testing.T) {
 	assertWorkerNum(10, 0)
 	assertActiveWorker(3)
 
-	pool.Remove(10)
-	pollOk := pollUntil(
-		func() bool {
-			alive, sleeping := pool.Len()
-			return alive == 0 && sleeping == 3
-		},
-		time.Millisecond, 3*time.Second,
+	waiter = createWaiter(
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
+		func() { <-pool.workerEndCh },
 	)
-	if !pollOk {
-		t.Errorf("timed-out: polling that calling Remove removes all idle workers and" +
-			" remains still-actively-working workers as sleeping")
-	}
+	pool.Remove(10)
+	waiter()
 
 	if !assertWorkerNum(0, 3) {
 		t.Fatalf("workers must be held as sleeping state," +
-			" where workers are not pulling new task but is still working on an each task")
+			" where a worker is not pulling new task but is still working on its task")
 	}
 	assertActiveWorker(3)
 
@@ -247,7 +207,7 @@ func TestWorkerPool(t *testing.T) {
 	pool.Wait()
 }
 
-func TestWorkerPool_Exec_abnormal_return(t *testing.T) {
+func TestPool_Exec_abnormal_return(t *testing.T) {
 	w := &workFn{}
 	w.init()
 
@@ -277,6 +237,8 @@ func TestWorkerPool_Exec_abnormal_return(t *testing.T) {
 	label := "njgnmopjp0iadjkpwac08jjmw;da;"
 	w.MustPanicWith(label)
 
+	waiter := createWaiter(func() { <-pool.workerEndCh })
+
 	switchCh := make(chan struct{})
 	go func() {
 		<-switchCh
@@ -289,16 +251,10 @@ func TestWorkerPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	pollOk := pollUntil(func() bool {
-		alive, sleeping := pool.Len()
-		return alive == 9 && sleeping == 0
-	}, time.Millisecond, 3*time.Second)
-	if !pollOk {
-		t.Fatalf("timed-out: polling that Worker removed after WorkExecutor panics")
-	}
+	waiter()
 
 	errorStackMu.Lock()
-	lastErr := errorStack[errorStack.Len()-1]
+	lastErr, _ := errorStack.PopBack()
 	errorStackMu.Unlock()
 	if errStr := lastErr.Error(); !strings.Contains(errStr, label) {
 		t.Fatalf("err message not containing %s, but actually is %s", label, errStr)
@@ -310,6 +266,8 @@ func TestWorkerPool_Exec_abnormal_return(t *testing.T) {
 		called.Store(true)
 		runtime.Goexit()
 	}
+
+	waiter = createWaiter(func() { <-pool.workerEndCh })
 
 	switchCh = make(chan struct{})
 	go func() {
@@ -323,22 +281,17 @@ func TestWorkerPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	pollOk = pollUntil(func() bool {
-		alive, sleeping := pool.Len()
-		return alive == 8 && sleeping == 0
-	}, time.Millisecond, 3*time.Second)
-	if !pollOk {
-		t.Errorf("timed-out: polling that Worker removed after WorkExecutor exits")
-	}
+	waiter()
 
 	if !called.Load() {
 		t.Fatalf("incorrect test implementation: onCalledHook is not called")
 	}
 
 	errorStackMu.Lock()
-	lastErr = errorStack[errorStack.Len()-1]
+	lastErr, _ = errorStack.PopBack()
 	errorStackMu.Unlock()
-	if errStr := lastErr.Error(); !strings.Contains(errStr, "runtime.Goexit was called") {
+	label = "runtime.Goexit was called"
+	if errStr := lastErr.Error(); !strings.Contains(errStr, label) {
 		t.Fatalf("err message not containing %s, but actually is %s", label, errStr)
 	}
 }

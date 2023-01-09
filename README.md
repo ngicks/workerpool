@@ -1,6 +1,6 @@
 # workerpool
 
-workerpool implements fan-out pattern nicely.
+workerpool implements the fan-out pattern nicely.
 
 ## example
 

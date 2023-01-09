@@ -2,10 +2,24 @@ package workerpool
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngicks/gommon/pkg/common"
+)
+
+type RunningState int32
+
+const (
+	Stopped RunningState = iota
+	Running
+	Paused
+)
+
+const (
+	Ended = 100 + iota
+	KilledStillRunning
 )
 
 // swap out this if tests need to.
@@ -36,8 +50,9 @@ var _ WorkExecuter[int] = WorkFn[int](nil)
 // running-state where it is working in loop,
 // or ended-state where no way is given to step back into working-state again.
 type Worker[T any] struct {
-	isRunning atomic.Int32
-	isEnded   atomic.Int32
+	stateMu   sync.Mutex
+	isRunning RunningState // 0 = stopped, 1 = running, 2 = paused
+	isEnded   int32
 
 	killCh  chan struct{}
 	pauseCh chan func()
@@ -88,10 +103,10 @@ func (w *Worker[T]) Run(ctx context.Context) (killed bool, err error) {
 	if w.IsEnded() {
 		return false, ErrAlreadyEnded
 	}
-	if !w.setRunning(true) {
+	if !w.start() {
 		return false, ErrAlreadyRunning
 	}
-	defer w.setRunning(false)
+	defer w.stop()
 
 	var normalReturn bool
 	defer func() {
@@ -126,6 +141,7 @@ loop:
 			case param, ok := <-w.taskCh:
 				if !ok {
 					w.Kill()
+					err = ErrInputChanClosed
 					break loop
 				}
 				func() {
@@ -143,10 +159,17 @@ loop:
 					default:
 					}
 
+					normalReturnInner := false
 					var err error
 					w.onTaskReceived(param)
-					defer func() { w.onTaskDone(param, err) }()
+					defer func() {
+						if !normalReturnInner {
+							err = ErrAbnormalReturn
+						}
+						w.onTaskDone(param, err)
+					}()
 					err = w.fn.Exec(ctx, param)
+					normalReturnInner = true
 				}()
 			}
 		}
@@ -154,7 +177,7 @@ loop:
 	// If task exits abnormally, called runtime.Goexit or panicking, it would not reach this line.
 	normalReturn = true
 	// killed will be mutated again in defer func.
-	return killed, nil
+	return killed, err
 }
 
 // Pause pauses w until returned continueWorker is called or timeout duration is passed.
@@ -167,8 +190,12 @@ func (w *Worker[T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorker func() (cancelled bool), err error) {
+	if !w.IsRunning() {
+		return nil, ErrNotRunning
+	}
 	pauseFnIsCalled := make(chan struct{})
 	continueCh := make(chan struct{})
+	ensurePauseFnReturn := make(chan struct{})
 
 	wait := make(chan struct{})
 	defer func() {
@@ -177,8 +204,11 @@ func (w *Worker[T]) Pause(
 
 	go func() {
 		pauseFn := func() {
+			w.pause()
 			close(pauseFnIsCalled)
 			<-continueCh
+			w.unpause()
+			close(ensurePauseFnReturn)
 		}
 
 		select {
@@ -224,7 +254,11 @@ func (w *Worker[T]) Pause(
 		closeContinueCh()
 	}()
 
-	return closeContinueCh, nil
+	return func() (cancelled bool) {
+		cancelled = closeContinueCh()
+		<-ensurePauseFnReturn
+		return cancelled
+	}, nil
 }
 
 // Kill kills this worker.
@@ -244,21 +278,81 @@ func (w *Worker[T]) Kill() {
 }
 
 func (w *Worker[T]) IsEnded() bool {
-	return w.isEnded.Load() == 1
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+	return w.isEnded == 1
 }
 
 func (w *Worker[T]) setEnded() bool {
-	return w.isEnded.CompareAndSwap(0, 1)
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	if w.isEnded == 0 {
+		w.isEnded = 1
+		return true
+	}
+	return false
 }
 
 func (w *Worker[T]) IsRunning() bool {
-	return w.isRunning.Load() == 1
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	return w.isRunning == Running
 }
 
-func (w *Worker[T]) setRunning(to bool) bool {
-	if to {
-		return w.isRunning.CompareAndSwap(0, 1)
-	} else {
-		return w.isRunning.CompareAndSwap(1, 0)
+func (w *Worker[T]) IsPaused() bool {
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	return w.isRunning == Paused
+}
+
+func (w *Worker[T]) State() RunningState {
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	isRunning := w.isRunning
+	isEnded := w.isEnded
+
+	if isEnded == 0 {
+		return RunningState(isRunning)
+	} else if isRunning != Stopped {
+		return KilledStillRunning
 	}
+	return Ended
+}
+
+func (w *Worker[T]) start() bool {
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	if w.isRunning == Stopped {
+		w.isRunning = Running
+		return true
+	}
+	return false
+}
+
+func (w *Worker[T]) stop() bool {
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+
+	if w.isRunning == Running {
+		w.isRunning = Stopped
+		return true
+	}
+	return false
+}
+
+func (w *Worker[T]) pause() {
+	w.stateMu.Lock()
+	w.isRunning = Paused
+	w.stateMu.Unlock()
+}
+
+func (w *Worker[T]) unpause() {
+	w.stateMu.Lock()
+	w.isRunning = Running
+	w.stateMu.Unlock()
 }

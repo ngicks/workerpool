@@ -14,9 +14,15 @@ import (
 )
 
 var (
-	ErrAlreadyRunning = errors.New("already running")
-	ErrAlreadyEnded   = errors.New("already ended")
-	ErrKilled         = errors.New("killed")
+	ErrAlreadyRunning  = errors.New("already running")
+	ErrAlreadyEnded    = errors.New("already ended")
+	ErrKilled          = errors.New("killed")
+	ErrNotRunning      = errors.New("not running")
+	ErrInputChanClosed = errors.New("input chan is closed")
+)
+
+var (
+	ErrAbnormalReturn = errors.New("abnormal return")
 )
 
 type worker[T any] struct {
@@ -41,9 +47,9 @@ func (w *worker[T]) Cancel() {
 	}
 }
 
-// WorkerPool is a collection of workers, which
+// Pool is a collection of workers, which
 // holds any number of Worker[T]'s, and runs them in goroutines.
-type WorkerPool[T any] struct {
+type Pool[T any] struct {
 	wg sync.WaitGroup
 
 	activeWorkerNum atomic.Int64
@@ -52,6 +58,7 @@ type WorkerPool[T any] struct {
 	workerMu        sync.Mutex
 	workers         *orderedmap.OrderedMap[string, *worker[T]]
 	sleepingWorkers map[string]*worker[T]
+	workerEndCh     chan string
 
 	constructor      workerConstructor[T]
 	onAbnormalReturn func(error)
@@ -61,18 +68,19 @@ type WorkerPool[T any] struct {
 func New[T any](
 	exec WorkExecuter[T],
 	options ...Option[T],
-) *WorkerPool[T] {
-	w := &WorkerPool[T]{
+) *Pool[T] {
+	w := &Pool[T]{
 		taskCh:           make(chan T),
 		workers:          orderedmap.New[string, *worker[T]](),
 		sleepingWorkers:  make(map[string]*worker[T]),
+		workerEndCh:      make(chan string, 50),
 		onAbnormalReturn: func(err error) {},
 	}
 
 	w.constructor = workerConstructor[T]{
 		IdGenerator:   uuid.NewString,
 		Exec:          exec,
-		ParamCh:       w.taskCh,
+		TaskCh:        w.taskCh,
 		recordReceive: func(T) { w.activeWorkerNum.Add(1) },
 		recordDone:    func(T, error) { w.activeWorkerNum.Add(-1) },
 	}
@@ -86,14 +94,14 @@ func New[T any](
 
 // Sender is getter of a sender side of the task channel,
 // where you can send tasks to workers.
-func (p *WorkerPool[T]) Sender() chan<- T {
+func (p *Pool[T]) Sender() chan<- T {
 	return p.taskCh
 }
 
 // Add adds delta number of workers to p.
 // This will create new delta number of goroutines.
 // delta is limited to be positive and non zero number, otherwise is no-op.
-func (p *WorkerPool[T]) Add(delta int) {
+func (p *Pool[T]) Add(delta int) {
 	if delta <= 0 {
 		return
 	}
@@ -104,12 +112,12 @@ func (p *WorkerPool[T]) Add(delta int) {
 	for i := 0; i < delta; i++ {
 		worker := p.constructor.Build()
 		p.wg.Add(1)
+		p.workers.Set(worker.id, worker)
+
 		go func() {
 			defer p.wg.Done()
 			p.runWorker(worker, true, p.onAbnormalReturn)
 		}()
-
-		p.workers.Set(worker.id, worker)
 	}
 }
 
@@ -127,7 +135,7 @@ func (p *panicErr) Error() string {
 	return fmt.Sprintf("%v\n\n%s", p.err, p.stack)
 }
 
-func (p *WorkerPool[T]) runWorker(
+func (p *Pool[T]) runWorker(
 	worker *worker[T],
 	shouldRecover bool,
 	abnormalReturnCb func(error),
@@ -143,6 +151,10 @@ func (p *WorkerPool[T]) runWorker(
 		p.workerMu.Lock()
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
+		select {
+		case p.workerEndCh <- worker.id:
+		default:
+		}
 		p.workerMu.Unlock()
 
 		if !normalReturn && !recovered {
@@ -177,9 +189,9 @@ func (p *WorkerPool[T]) runWorker(
 }
 
 // Remove removes delta number of workers from p.
-// Removed workers could be held as sleeping if they were still working on a task.
+// Removed workers would be held as sleeping if they were still working on a task.
 // delta is limited to be positive and non zero number, otherwise is no-op.
-func (p *WorkerPool[T]) Remove(delta int) {
+func (p *Pool[T]) Remove(delta int) {
 	if delta <= 0 {
 		return
 	}
@@ -204,19 +216,19 @@ func (p *WorkerPool[T]) Remove(delta int) {
 
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
-func (p *WorkerPool[T]) Len() (alive, sleeping int) {
+func (p *Pool[T]) Len() (alive, sleeping int) {
 	p.workerMu.Lock()
 	defer p.workerMu.Unlock()
 	return p.workers.Len(), len(p.sleepingWorkers)
 }
 
 // ActiveWorkerNum returns number of actively working worker.
-func (p *WorkerPool[T]) ActiveWorkerNum() int64 {
+func (p *Pool[T]) ActiveWorkerNum() int64 {
 	return p.activeWorkerNum.Load()
 }
 
 // Kill kills all workers.
-func (p *WorkerPool[T]) Kill() {
+func (p *Pool[T]) Kill() {
 	p.workerMu.Lock()
 	defer p.workerMu.Unlock()
 
@@ -228,7 +240,7 @@ func (p *WorkerPool[T]) Kill() {
 	}
 }
 
-func (p *WorkerPool[T]) Pause(
+func (p *Pool[T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorkers func() (cancelled bool), err error) {
@@ -275,6 +287,6 @@ func (p *WorkerPool[T]) Pause(
 
 // Wait waits for all workers to stop.
 // Calling this without Kill and/or Remove all workers may block forever.
-func (p *WorkerPool[T]) Wait() {
+func (p *Pool[T]) Wait() {
 	p.wg.Wait()
 }
