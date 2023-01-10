@@ -62,6 +62,8 @@ type Worker[T any] struct {
 	onTaskReceived func(param T)
 	onTaskDone     func(param T, err error)
 	cancelFn       atomic.Pointer[context.CancelFunc]
+
+	timerFactory func() common.ITimer
 }
 
 // NewWorker returns initialized Worker.
@@ -86,6 +88,7 @@ func NewWorker[T any](
 		taskCh:         taskCh,
 		onTaskReceived: onTaskReceived,
 		onTaskDone:     onTaskDone,
+		timerFactory:   timerFactory,
 	}
 }
 
@@ -241,7 +244,7 @@ func (w *Worker[T]) Pause(
 
 	// time.After is not eligible for this use-case,
 	// since the timer returned from After will not be GC'ed until it goes off.
-	timer := timerFactory()
+	timer := w.timerFactory()
 	timer.Reset(timeout)
 
 	go func() {

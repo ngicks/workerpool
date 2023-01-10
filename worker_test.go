@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TODO: improve readability of overall tests.
+// TODO: use hacked timer to test time outs.
 
 type idParam struct {
 	Id int
