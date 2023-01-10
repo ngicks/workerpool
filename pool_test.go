@@ -378,7 +378,7 @@ func TestPool_Pause(t *testing.T) {
 
 	pool.workerMu.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
-		assert.True(pair.Value.IsPaused())
+		assert.True(pair.Value.IsPaused(), "worker: %+v", pair.Value)
 	}
 	pool.workerMu.Unlock()
 
@@ -403,8 +403,13 @@ func TestPool_Pause_timeout(t *testing.T) {
 	assert := assert.New(t)
 
 	workExec := newStackWorkExec()
+	recorderHook := &recorderHook{}
+	recorderHook.init()
 
-	pool := New[idParam](workExec)
+	pool := New[idParam](
+		workExec,
+		SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone),
+	)
 
 	pool.Add(10)
 
@@ -444,13 +449,15 @@ func TestPool_Pause_timeout(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
+		waiter := timing.CreateWaiterFn(func() { <-recorderHook.onDone })
 		workExec.step()
+		waiter()
 	}
 
 	select {
 	case <-pauseReturn:
 	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("Pause must not return at this point. all workers are blocking")
+		t.Fatalf("Pause must return at this point. all workers are blocking")
 	}
 
 	<-time.After(time.Millisecond)

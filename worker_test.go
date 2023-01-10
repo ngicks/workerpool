@@ -210,6 +210,13 @@ func initWorker() (
 	return worker, taskCh, workExec, recorder, runWorker
 }
 
+func waitUntilRunning(worker interface{ IsRunning() bool }) (ok bool) {
+	return timing.PollUntil(
+		func(ctx context.Context) bool { return worker.IsRunning() },
+		time.Millisecond, 50*time.Millisecond,
+	)
+}
+
 func TestWorker(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -229,9 +236,7 @@ func TestWorker(t *testing.T) {
 		closedOnRunReturn := runWorker(worker.Run)
 
 	// reducing race condition
-	timing.PollUntil(func(ctx context.Context) bool {
-		return worker.IsRunning()
-	}, time.Millisecond, time.Second)
+	waitUntilRunning(worker)
 
 	var err error
 	_, err = worker.Run(context.TODO())
@@ -477,6 +482,10 @@ func TestWorker_pause(t *testing.T) {
 	}()
 	defer cancelRun()
 
+	// runWorker switches context to the dedicated goroutine that runs worker.Run.
+	// We could not avoid this race condition, but adding small wait on this should suffice.
+	waitUntilRunning(worker)
+
 	assert.True(worker.IsRunning(), "IsRunning: just started running")
 	assert.False(worker.IsPaused(), "IsPaused: just started running")
 	assert.False(worker.IsEnded(), "IsEnded: just started running")
@@ -629,6 +638,8 @@ func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
 		<-closedOnRunReturn
 	}()
 	defer cancelRun()
+
+	waitUntilRunning(worker)
 
 	pauseCtx, pauseCancel := context.WithCancel(context.Background())
 	cont, err := worker.Pause(pauseCtx, 5*time.Millisecond)

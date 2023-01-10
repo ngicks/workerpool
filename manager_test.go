@@ -92,13 +92,6 @@ func TestManager(t *testing.T) {
 		SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
-	// pollWorkerNum := func(alive, sleeping int) bool {
-	// 	return timing.PollUntil(func(context.Context) bool {
-	// 		alive_, sleeping_ := pool.Len()
-	// 		return alive_ == alive && sleeping_ == sleeping
-	// 	}, 5*time.Millisecond, time.Second)
-	// }
-
 	manager := NewManager(
 		pool, 31,
 		SetMaxWaiting[idParam](5),
@@ -246,6 +239,9 @@ exhaustLoop:
 	fakeTimer.Send(time.Now())
 	waiter()
 
+	pool.WaitWorker(func(alive, sleeping int) bool {
+		return alive+sleeping == 10
+	})
 	if !assertTotalWorkerNum(10) {
 		active := manager.ActiveWorkerNum()
 		alive, sleeping := manager.Len()
