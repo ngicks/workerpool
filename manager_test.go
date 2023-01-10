@@ -65,7 +65,7 @@ func TestManager(t *testing.T) {
 	pollWorkerNum := func(alive, sleeping int) bool {
 		return timing.PollUntil(func(context.Context) bool {
 			alive_, sleeping_ := pool.Len()
-			return alive_ == alive && sleeping_ == sleeping_
+			return alive_ == alive && sleeping_ == sleeping
 		}, 50*time.Millisecond, 3*time.Second)
 	}
 
