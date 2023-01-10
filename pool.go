@@ -56,6 +56,8 @@ type Pool[T any] struct {
 
 	constructor      workerConstructor[T]
 	onAbnormalReturn func(error)
+
+	cond *sync.Cond
 }
 
 // New creates WorkerPool with 0 worker.
@@ -69,6 +71,8 @@ func New[T any](
 		sleepingWorkers:  make(map[string]*worker[T]),
 		onAbnormalReturn: func(err error) {},
 	}
+
+	w.cond = sync.NewCond(&w.workerMu)
 
 	w.constructor = workerConstructor[T]{
 		IdGenerator:   uuid.NewString,
@@ -89,6 +93,17 @@ func New[T any](
 // where you can send tasks to workers.
 func (p *Pool[T]) Sender() chan<- T {
 	return p.taskCh
+}
+
+func (p *Pool[T]) WaitWorker(condition func(alive, sleeping int) bool, action ...func()) {
+	p.cond.L.Lock()
+	defer p.cond.L.Unlock()
+	for !condition(p.len()) {
+		p.cond.Wait()
+	}
+	for _, act := range action {
+		act()
+	}
 }
 
 // Add adds delta number of workers to p.
@@ -115,7 +130,9 @@ func (p *Pool[T]) Add(delta int) {
 			defer cancel()
 			p.runWorker(runCtx, worker, true, p.onAbnormalReturn)
 		}()
+
 	}
+	p.cond.Broadcast()
 }
 
 var (
@@ -146,6 +163,7 @@ func (p *Pool[T]) runWorker(
 		p.workerMu.Lock()
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
+		p.cond.Broadcast()
 		p.workerMu.Unlock()
 
 		if !normalReturn && !recovered {
@@ -209,6 +227,10 @@ func (p *Pool[T]) Remove(delta int) {
 func (p *Pool[T]) Len() (alive, sleeping int) {
 	p.workerMu.Lock()
 	defer p.workerMu.Unlock()
+	return p.len()
+}
+
+func (p *Pool[T]) len() (alive, sleeping int) {
 	return p.workers.Len(), len(p.sleepingWorkers)
 }
 
