@@ -3,6 +3,8 @@ package workerpool
 import (
 	"context"
 	"time"
+
+	"github.com/ngicks/gommon/pkg/common"
 )
 
 var (
@@ -19,6 +21,8 @@ type Manager[T any] struct {
 	maxWaiting       int
 	removalBatchSize int
 	removalInterval  time.Duration
+
+	timerFactory func() common.ITimer
 }
 
 func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]) *Manager[T] {
@@ -29,6 +33,7 @@ func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]
 		maxWaiting:       defaultMaxWaiting,
 		removalBatchSize: defaultRemovalBatchSize,
 		removalInterval:  defaultRemovalInterval,
+		timerFactory:     timerFactory,
 	}
 
 	for _, opt := range options {
@@ -39,7 +44,7 @@ func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]
 }
 
 func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err error) {
-	timer := timerFactory()
+	timer := m.timerFactory()
 	resetTimer := func() {
 		timer.Reset(m.removalInterval)
 	}
@@ -51,12 +56,28 @@ func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err erro
 			var zero T
 			return zero, false, nil
 		case <-timer.Channel():
+			alive, sleeping := m.pool.Len()
+			if alive == 0 {
+				// does not need to reset timer here...
+				// until worker is added.
+				// But is it hard to test out?
+				continue
+			}
+			activeWorkerNum := m.pool.ActiveWorkerNum()
+			waiting := int64(alive+sleeping) - activeWorkerNum
+
+			if waiting > int64(m.maxWaiting) {
+				delta := int(waiting - int64(m.maxWaiting))
+				if delta > m.removalBatchSize {
+					delta = m.removalBatchSize
+				}
+				m.pool.Remove(delta)
+			}
 			resetTimer()
-			m.pool.Remove(m.removalBatchSize)
 		case task, ok := <-m.taskCh:
 			if !ok {
 				var zero T
-				return zero, false, ErrKilled
+				return zero, false, ErrInputChanClosed
 			}
 
 			timer.Stop()
