@@ -407,7 +407,7 @@ func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 	worker,
 		taskCh,
 		workExec,
-		_,
+		recorderHook,
 		runWorker := initWorker()
 
 	_,
@@ -429,6 +429,7 @@ func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 	assert.NoError(err)
 	assert.NotNil(recovered)
 	assert.Equal(recovered.(string), "foo")
+	assert.ErrorIs(recorderHook.doneArgs[0].Err, ErrAbnormalReturn)
 }
 
 func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
@@ -437,7 +438,7 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 	worker,
 		taskCh,
 		workExec,
-		_,
+		recorderHook,
 		runWorker := initWorker()
 
 	_,
@@ -455,6 +456,7 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 
 	assert.True(worker.IsEnded())
 	assert.False(worker.IsRunning())
+	assert.ErrorIs(recorderHook.doneArgs[0].Err, ErrAbnormalReturn)
 }
 
 func TestWorker_pause(t *testing.T) {
