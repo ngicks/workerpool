@@ -280,3 +280,244 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	pool.Kill()
 	pool.Wait()
 }
+
+type stackWorkExec struct {
+	sync.Mutex
+
+	stepper chan struct{} // stepper is received when Exec is called, calling step() or send on stepper will step an Exec call to return.
+
+	stack slice.Stack[func() error]
+}
+
+func newStackWorkExec() *stackWorkExec {
+	return &stackWorkExec{
+		stepper: make(chan struct{}),
+	}
+}
+
+func (e *stackWorkExec) step() {
+	e.stepper <- struct{}{}
+}
+
+func (e *stackWorkExec) Exec(ctx context.Context, param idParam) error {
+	<-e.stepper
+
+	e.Lock()
+	fn, _ := e.stack.Pop()
+	e.Unlock()
+
+	if fn != nil {
+		return fn()
+	}
+	return nil
+}
+
+func TestPool_Pause(t *testing.T) {
+	assert := assert.New(t)
+
+	workExec := newStackWorkExec()
+
+	workExec.stack.Push(func() error { panic("foo") })
+	workExec.stack.Push(func() error { runtime.Goexit(); return nil })
+	workExec.stack.Push(func() error { return nil })
+
+	pool := New[idParam](workExec)
+
+	pool.Add(10)
+
+	assertWorkerNum := createAssertWorkerNum(t, pool)
+	assertActiveWorker := createAssertActiveWorker(t, pool)
+
+	defer pool.Wait()
+	defer pool.Kill()
+
+	defer func() {
+		for i := 0; i < 100; i++ {
+			select {
+			case workExec.stepper <- struct{}{}:
+			default:
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 10; i++ {
+		pool.Sender() <- idParam{}
+	}
+
+	var continueWorkers func() bool
+	var err error
+	pauseReturn := make(chan struct{})
+	go func() {
+		<-pauseReturn
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		continueWorkers, err = pool.Pause(ctx, time.Hour)
+		close(pauseReturn)
+	}()
+	pauseReturn <- struct{}{}
+
+	select {
+	case <-pauseReturn:
+		t.Fatalf("Pause must not return at this point. all workers are blocking")
+	case <-time.After(time.Millisecond):
+	}
+
+	assertWorkerNum(10, 0)
+	assertActiveWorker(10)
+
+	for i := 0; i < 10; i++ {
+		workExec.step()
+	}
+
+	select {
+	case <-pauseReturn:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("Pause must return at this point. all workers are unblocked")
+	}
+
+	pool.workerMu.Lock()
+	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
+		assert.True(pair.Value.IsPaused())
+	}
+	pool.workerMu.Unlock()
+
+	assert.True(continueWorkers())
+	assert.NoError(err)
+	assert.False(continueWorkers())
+
+	pool.workerMu.Lock()
+	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
+		assert.False(pair.Value.IsPaused())
+	}
+	pool.workerMu.Unlock()
+
+	assertWorkerNum(8, 0)
+	assertActiveWorker(0)
+
+	pool.Remove(8)
+	pool.Wait()
+}
+
+func TestPool_Pause_timeout(t *testing.T) {
+	assert := assert.New(t)
+
+	workExec := newStackWorkExec()
+
+	pool := New[idParam](workExec)
+
+	pool.Add(10)
+
+	defer pool.Wait()
+	defer pool.Kill()
+
+	defer func() {
+		for i := 0; i < 100; i++ {
+			select {
+			case workExec.stepper <- struct{}{}:
+			default:
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 10; i++ {
+		pool.Sender() <- idParam{}
+	}
+
+	var continueWorkers func() bool
+	var err error
+	pauseReturn := make(chan struct{})
+	go func() {
+		<-pauseReturn
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		continueWorkers, err = pool.Pause(ctx, time.Millisecond)
+		close(pauseReturn)
+	}()
+	pauseReturn <- struct{}{}
+
+	select {
+	case <-pauseReturn:
+		t.Fatalf("Pause must not return at this point. all workers are blocking")
+	case <-time.After(3 * time.Millisecond):
+	}
+
+	for i := 0; i < 10; i++ {
+		workExec.step()
+	}
+
+	select {
+	case <-pauseReturn:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("Pause must not return at this point. all workers are blocking")
+	}
+
+	<-time.After(time.Millisecond)
+
+	assert.False(continueWorkers(), "must timed out")
+	assert.NoError(err)
+}
+func TestPool_Pause_cancelling_context(t *testing.T) {
+	assert := assert.New(t)
+
+	workExec := newStackWorkExec()
+
+	pool := New[idParam](workExec)
+
+	pool.Add(10)
+
+	defer pool.Wait()
+	defer pool.Kill()
+
+	defer func() {
+		for i := 0; i < 100; i++ {
+			select {
+			case workExec.stepper <- struct{}{}:
+			default:
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 10; i++ {
+		pool.Sender() <- idParam{}
+	}
+
+	var continueWorkers func() bool
+	var err error
+	pauseReturn := make(chan struct{})
+	go func() {
+		<-pauseReturn
+		ctx, cancel := context.WithCancel(context.Background())
+		sw := make(chan struct{})
+		go func() {
+			<-sw
+			<-time.After(time.Millisecond)
+			cancel()
+		}()
+		sw <- struct{}{}
+		continueWorkers, err = pool.Pause(ctx, time.Millisecond)
+		close(pauseReturn)
+	}()
+	pauseReturn <- struct{}{}
+
+	select {
+	case <-pauseReturn:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatalf("Pause must return at this point. the context passed to Pause is cancelled")
+	}
+
+	assert.ErrorIs(err, context.Canceled)
+	assert.Nil(continueWorkers)
+
+	for i := 0; i < 10; i++ {
+		workExec.step()
+	}
+
+	pool.workerMu.Lock()
+	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
+		assert.False(pair.Value.IsPaused())
+	}
+	pool.workerMu.Unlock()
+}
