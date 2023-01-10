@@ -219,13 +219,13 @@ func (w *Worker[T]) Pause(
 		close(wait)
 	}()
 
+	var called atomic.Bool
 	closeContinueCh := func() bool {
-		select {
-		case <-continueCh:
-			return false
-		default:
+		if called.CompareAndSwap(false, true) {
 			close(continueCh)
 			return true
+		} else {
+			return false
 		}
 	}
 
