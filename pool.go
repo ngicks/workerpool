@@ -235,7 +235,6 @@ func (p *Pool[T]) Pause(
 	timeout time.Duration,
 ) (continueWorkers func() (cancelled bool), err error) {
 	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -252,6 +251,8 @@ func (p *Pool[T]) Pause(
 			}
 		}(pair.Value)
 	}
+
+	p.workerMu.Unlock()
 
 	wg.Wait()
 
