@@ -376,21 +376,21 @@ func TestPool_Pause(t *testing.T) {
 		t.Fatalf("Pause must return at this point. all workers are unblocked")
 	}
 
-	pool.workerMu.Lock()
+	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
 		assert.True(pair.Value.IsPaused(), "worker: %+v", pair.Value)
 	}
-	pool.workerMu.Unlock()
+	pool.workerCond.L.Unlock()
 
 	assert.True(continueWorkers())
 	assert.NoError(err)
 	assert.False(continueWorkers())
 
-	pool.workerMu.Lock()
+	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
 		assert.False(pair.Value.IsPaused())
 	}
-	pool.workerMu.Unlock()
+	pool.workerCond.L.Unlock()
 
 	assertWorkerNum(8, 0)
 	assertActiveWorker(0)
@@ -522,9 +522,9 @@ func TestPool_Pause_cancelling_context(t *testing.T) {
 		workExec.step()
 	}
 
-	pool.workerMu.Lock()
+	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
 		assert.False(pair.Value.IsPaused())
 	}
-	pool.workerMu.Unlock()
+	pool.workerCond.L.Unlock()
 }

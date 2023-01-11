@@ -109,6 +109,10 @@ func (m *Manager[T]) Sender() chan<- T {
 	return m.taskCh
 }
 
+func (m *Manager[T]) WaitWorker(condition func(alive, sleeping int) bool, action ...func()) {
+	m.pool.WaitWorker(condition, action...)
+}
+
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
 func (m *Manager[T]) Len() (alive, sleeping int) {

@@ -160,13 +160,12 @@ func initWorker() (
 
 	taskCh = make(chan idParam)
 
-	workerConcrete := NewWorker[idParam](
+	worker = NewWorker[idParam](
 		workExec,
 		taskCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
 	)
-	worker = &workerConcrete
 
 	runWorker = func(run func(ctx context.Context) (killed bool, err error)) (
 		runCtx context.Context,

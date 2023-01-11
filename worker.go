@@ -50,7 +50,7 @@ var _ WorkExecuter[int] = WorkFn[int](nil)
 // running-state where it is working in loop,
 // or ended-state where no way is given to step back into working-state again.
 type Worker[T any] struct {
-	stateMu   sync.Mutex
+	stateCond *sync.Cond
 	isRunning RunningState // 0 = stopped, 1 = running, 2 = paused
 	isEnded   int32
 
@@ -73,7 +73,7 @@ func NewWorker[T any](
 	taskCh <-chan T,
 	onTaskReceived func(param T),
 	onTaskDone func(param T, err error),
-) Worker[T] {
+) *Worker[T] {
 	if onTaskReceived == nil {
 		onTaskReceived = func(T) {}
 	}
@@ -81,7 +81,8 @@ func NewWorker[T any](
 		onTaskDone = func(T, error) {}
 	}
 
-	return Worker[T]{
+	return &Worker[T]{
+		stateCond:      sync.NewCond(&sync.Mutex{}),
 		killCh:         make(chan struct{}),
 		pauseCh:        make(chan func()),
 		fn:             fn,
@@ -281,14 +282,14 @@ func (w *Worker[T]) Kill() {
 }
 
 func (w *Worker[T]) IsEnded() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 	return w.isEnded == 1
 }
 
 func (w *Worker[T]) setEnded() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	if w.isEnded == 0 {
 		w.isEnded = 1
@@ -298,22 +299,22 @@ func (w *Worker[T]) setEnded() bool {
 }
 
 func (w *Worker[T]) IsRunning() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	return w.isRunning == Running
 }
 
 func (w *Worker[T]) IsPaused() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	return w.isRunning == Paused
 }
 
 func (w *Worker[T]) State() RunningState {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	isRunning := w.isRunning
 	isEnded := w.isEnded
@@ -327,8 +328,8 @@ func (w *Worker[T]) State() RunningState {
 }
 
 func (w *Worker[T]) start() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	if w.isRunning == Stopped {
 		w.isRunning = Running
@@ -338,8 +339,8 @@ func (w *Worker[T]) start() bool {
 }
 
 func (w *Worker[T]) stop() bool {
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
 
 	if w.isRunning == Running {
 		w.isRunning = Stopped
@@ -349,13 +350,13 @@ func (w *Worker[T]) stop() bool {
 }
 
 func (w *Worker[T]) pause() {
-	w.stateMu.Lock()
+	w.stateCond.L.Lock()
 	w.isRunning = Paused
-	w.stateMu.Unlock()
+	w.stateCond.L.Unlock()
 }
 
 func (w *Worker[T]) unpause() {
-	w.stateMu.Lock()
+	w.stateCond.L.Lock()
 	w.isRunning = Running
-	w.stateMu.Unlock()
+	w.stateCond.L.Unlock()
 }

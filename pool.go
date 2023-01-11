@@ -26,7 +26,7 @@ var (
 )
 
 type worker[T any] struct {
-	Worker[T]
+	*Worker[T]
 	id       string
 	cancelFn context.CancelFunc
 	sync.Mutex
@@ -50,14 +50,12 @@ type Pool[T any] struct {
 	activeWorkerNum atomic.Int64
 	taskCh          chan T
 
-	workerMu        sync.Mutex
+	workerCond      *sync.Cond
 	workers         *orderedmap.OrderedMap[string, *worker[T]]
 	sleepingWorkers map[string]*worker[T]
 
 	constructor      workerConstructor[T]
 	onAbnormalReturn func(error)
-
-	cond *sync.Cond
 }
 
 // New creates WorkerPool with 0 worker.
@@ -70,9 +68,8 @@ func New[T any](
 		workers:          orderedmap.New[string, *worker[T]](),
 		sleepingWorkers:  make(map[string]*worker[T]),
 		onAbnormalReturn: func(err error) {},
+		workerCond:       sync.NewCond(&sync.Mutex{}),
 	}
-
-	w.cond = sync.NewCond(&w.workerMu)
 
 	w.constructor = workerConstructor[T]{
 		IdGenerator:   uuid.NewString,
@@ -96,10 +93,10 @@ func (p *Pool[T]) Sender() chan<- T {
 }
 
 func (p *Pool[T]) WaitWorker(condition func(alive, sleeping int) bool, action ...func()) {
-	p.cond.L.Lock()
-	defer p.cond.L.Unlock()
+	p.workerCond.L.Lock()
+	defer p.workerCond.L.Unlock()
 	for !condition(p.len()) {
-		p.cond.Wait()
+		p.workerCond.Wait()
 	}
 	for _, act := range action {
 		act()
@@ -114,8 +111,8 @@ func (p *Pool[T]) Add(delta int) {
 		return
 	}
 
-	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
+	p.workerCond.L.Lock()
+	defer p.workerCond.L.Unlock()
 
 	for i := 0; i < delta; i++ {
 		worker := p.constructor.Build()
@@ -132,7 +129,7 @@ func (p *Pool[T]) Add(delta int) {
 		}()
 
 	}
-	p.cond.Broadcast()
+	p.workerCond.Broadcast()
 }
 
 var (
@@ -160,11 +157,11 @@ func (p *Pool[T]) runWorker(
 
 	// see https://cs.opensource.google/go/x/sync/+/0de741cf:singleflight/singleflight.go;l=138-200;drc=0de741cfad7ff3874b219dfbc1b9195b58c7c490
 	defer func() {
-		p.workerMu.Lock()
+		p.workerCond.L.Lock()
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
-		p.cond.Broadcast()
-		p.workerMu.Unlock()
+		p.workerCond.Broadcast()
+		p.workerCond.L.Unlock()
 
 		if !normalReturn && !recovered {
 			abnormalReturnErr = errGoexit
@@ -204,8 +201,8 @@ func (p *Pool[T]) Remove(delta int) {
 		return
 	}
 
-	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
+	p.workerCond.L.Lock()
+	defer p.workerCond.L.Unlock()
 
 	old := p.workers.Oldest()
 	next := old
@@ -225,8 +222,8 @@ func (p *Pool[T]) Remove(delta int) {
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
 func (p *Pool[T]) Len() (alive, sleeping int) {
-	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
+	p.workerCond.L.Lock()
+	defer p.workerCond.L.Unlock()
 	return p.len()
 }
 
@@ -241,8 +238,8 @@ func (p *Pool[T]) ActiveWorkerNum() int64 {
 
 // Kill kills all workers.
 func (p *Pool[T]) Kill() {
-	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
+	p.workerCond.L.Lock()
+	defer p.workerCond.L.Unlock()
 
 	for pair := p.workers.Oldest(); pair != nil; pair = pair.Next() {
 		pair.Value.Kill()
@@ -256,7 +253,7 @@ func (p *Pool[T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorkers func() (cancelled bool), err error) {
-	p.workerMu.Lock()
+	p.workerCond.L.Lock()
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -274,7 +271,7 @@ func (p *Pool[T]) Pause(
 		}(pair.Value)
 	}
 
-	p.workerMu.Unlock()
+	p.workerCond.L.Unlock()
 
 	wg.Wait()
 

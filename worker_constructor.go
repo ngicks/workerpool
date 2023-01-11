@@ -19,7 +19,7 @@ func (p *workerConstructor[T]) Build() *worker[T] {
 	}
 }
 
-func (p *workerConstructor[T]) build() Worker[T] {
+func (p *workerConstructor[T]) build() *Worker[T] {
 	combinedOnTaskReceived := func(param T) {
 		if p.OnReceive != nil {
 			p.OnReceive(param)
