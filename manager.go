@@ -56,18 +56,17 @@ func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err erro
 			var zero T
 			return zero, false, nil
 		case <-timer.Channel():
-			alive, sleeping := m.pool.Len()
+			alive, sleeping, active := m.pool.Len()
 			if alive == 0 {
 				// does not need to reset timer here...
 				// until worker is added.
 				// But is it hard to test out?
 				continue
 			}
-			activeWorkerNum := m.pool.ActiveWorkerNum()
-			waiting := int64(alive+sleeping) - activeWorkerNum
+			waiting := (alive + sleeping) - active
 
-			if waiting > int64(m.maxWaiting) {
-				delta := int(waiting - int64(m.maxWaiting))
+			if waiting > m.maxWaiting {
+				delta := waiting - m.maxWaiting
 				if delta > m.removalBatchSize {
 					delta = m.removalBatchSize
 				}
@@ -84,7 +83,7 @@ func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err erro
 			select {
 			case m.pool.Sender() <- task:
 			default:
-				alive, sleeping := m.pool.Len()
+				alive, sleeping, _ := m.pool.Len()
 				delta := m.maxWorker - (alive + sleeping)
 				if delta > 0 {
 					if delta > (m.maxWaiting + 1) {
@@ -109,19 +108,14 @@ func (m *Manager[T]) Sender() chan<- T {
 	return m.taskCh
 }
 
-func (m *Manager[T]) WaitWorker(condition func(alive, sleeping int) bool, action ...func()) {
-	m.pool.WaitWorker(condition, action...)
+func (m *Manager[T]) WaitWorker(condition func(alive, sleeping, active int) bool, action ...func()) {
+	m.pool.WaitUntil(condition, action...)
 }
 
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
-func (m *Manager[T]) Len() (alive, sleeping int) {
+func (m *Manager[T]) Len() (alive, sleeping, active int) {
 	return m.pool.Len()
-}
-
-// ActiveWorkerNum returns number of actively working worker.
-func (m *Manager[T]) ActiveWorkerNum() int64 {
-	return m.pool.ActiveWorkerNum()
 }
 
 // Kill kills all workers.

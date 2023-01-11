@@ -41,16 +41,13 @@ func main() {
 			default:
 			}
 
-			activeWorker := pool.ActiveWorkerNum()
 			goroutines := runtime.NumGoroutine()
-			active, sleeping := pool.Len()
+			active, sleeping, activeWorker := pool.Len()
 			fmt.Printf(
-				"\nCurrent active worker: %d\n"+
-					"Current goroutine num: %d\n"+
-					"Alive worker = %d, Sleeping worker = %d.\n",
-				activeWorker,
+				"\nCurrent goroutine num: %2.2d\n"+
+					"Alive worker = %2.2d, Sleeping worker = %2.2d, Active worker = %2.2d\n",
 				goroutines,
-				active, sleeping,
+				active, sleeping, activeWorker,
 			)
 
 			time.Sleep(500 * time.Millisecond)

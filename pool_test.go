@@ -12,12 +12,13 @@ import (
 	"github.com/ngicks/gommon/pkg/timing"
 	"github.com/ngicks/type-param-common/slice"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int) }) func(alive, sleeping int) bool {
+func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int, int) }) func(alive, sleeping int) bool {
 	return func(alive, sleeping int) bool {
 		t.Helper()
-		alive_, sleeping_ := pool.Len()
+		alive_, sleeping_, _ := pool.Len()
 		return assert.Equal(
 			t,
 			alive, alive_,
@@ -33,10 +34,10 @@ func createAssertWorkerNum(t *testing.T, pool interface{ Len() (int, int) }) fun
 	}
 }
 
-func createAssertActiveWorker(t *testing.T, pool interface{ ActiveWorkerNum() int64 }) func(active int) bool {
+func createAssertActiveWorker(t *testing.T, pool interface{ Len() (int, int, int) }) func(active int) bool {
 	return func(active int) bool {
 		t.Helper()
-		active_ := int(pool.ActiveWorkerNum())
+		_, _, active_ := pool.Len()
 		return assert.Equal(
 			t,
 			active, active_,
@@ -49,8 +50,7 @@ func createAssertActiveWorker(t *testing.T, pool interface{ ActiveWorkerNum() in
 func TestPool(t *testing.T) {
 	idParamFactory := createIdParamFactory()
 
-	w := &workFn{}
-	w.init()
+	w := newWorkFn()
 
 	// releasing all blocking stepper.
 	// For correct error printing
@@ -64,8 +64,7 @@ func TestPool(t *testing.T) {
 		}
 	}()
 
-	recorderHook := &recorderHook{}
-	recorderHook.init()
+	recorderHook := newRecorderHook()
 
 	pool := New[idParam](w, SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone))
 
@@ -97,12 +96,11 @@ func TestPool(t *testing.T) {
 		waiter()
 	}
 
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 5 && sleeping == 0 && active == 3
+	})
 	assertWorkerNum(5, 0)
 	assertActiveWorker(3)
-
-	// give some time to workExec to step
-	// from sending w.called channel to blocking on w.stepper channel
-	time.Sleep(20 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
 		waiter := timing.CreateWaiterFn(func() { <-recorderHook.onDone })
@@ -110,6 +108,9 @@ func TestPool(t *testing.T) {
 		waiter()
 	}
 
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 5 && sleeping == 0 && active == 0
+	})
 	assertWorkerNum(5, 0)
 	assertActiveWorker(0)
 
@@ -119,6 +120,9 @@ func TestPool(t *testing.T) {
 		waiter()
 	}
 
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 5 && sleeping == 0 && active == 5
+	})
 	assertWorkerNum(5, 0)
 	assertActiveWorker(5)
 
@@ -141,6 +145,9 @@ func TestPool(t *testing.T) {
 	pool.Add(5)
 	waiter()
 
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 10 && sleeping == 0 && active == 6
+	})
 	assertWorkerNum(10, 0)
 	if !assertActiveWorker(6) {
 		t.Fatalf("adding worker while sending task is blocking must unblock sender immediately after.")
@@ -165,11 +172,9 @@ func TestPool(t *testing.T) {
 
 	pool.Remove(10)
 
-	timing.PollUntil(func(context.Context) bool {
-		alive, sleeping := pool.Len()
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
 		return alive == 0 && sleeping == 3
-	}, 50*time.Millisecond, 3*time.Second)
-
+	})
 	if !assertWorkerNum(0, 3) {
 		t.Errorf("workers must be held as sleeping state," +
 			" where a worker is not pulling new task but is still working on its task")
@@ -181,6 +186,10 @@ func TestPool(t *testing.T) {
 		w.step()
 		waiter()
 	}
+
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 0 && sleeping == 0
+	})
 	assertWorkerNum(0, 0)
 	assertActiveWorker(0)
 
@@ -188,8 +197,7 @@ func TestPool(t *testing.T) {
 }
 
 func TestPool_Exec_abnormal_return(t *testing.T) {
-	w := &workFn{}
-	w.init()
+	w := newWorkFn()
 
 	defer func() {
 		for i := 0; i < 100; i++ {
@@ -203,12 +211,14 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 
 	var errorStack slice.Deque[error]
 	var errorStackMu sync.Mutex
+	cbCalled := make(chan struct{}, 1)
 	pool := New[idParam](
 		w,
 		SetAbnormalReturnCb[idParam](func(err error) {
 			errorStackMu.Lock()
 			errorStack.PushBack(err)
 			errorStackMu.Unlock()
+			cbCalled <- struct{}{}
 		}),
 	)
 
@@ -229,14 +239,15 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	timing.PollUntil(func(context.Context) bool {
-		alive, sleeping := pool.Len()
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
 		return alive == 9 && sleeping == 0
-	}, 50*time.Millisecond, 2*time.Second)
+	})
 
+	<-cbCalled
 	errorStackMu.Lock()
-	lastErr, _ := errorStack.PopBack()
+	lastErr, ok := errorStack.PopBack()
 	errorStackMu.Unlock()
+	require.True(t, ok)
 	if errStr := lastErr.Error(); !strings.Contains(errStr, label) {
 		t.Fatalf("err message not containing %s, but actually is %s", label, errStr)
 	}
@@ -260,18 +271,19 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	}()
 	switchCh <- struct{}{}
 
-	timing.PollUntil(func(context.Context) bool {
-		alive, sleeping := pool.Len()
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
 		return alive == 8 && sleeping == 0
-	}, 50*time.Millisecond, 2*time.Second)
+	})
 
 	if !called.Load() {
 		t.Fatalf("incorrect test implementation: onCalledHook is not called")
 	}
 
+	<-cbCalled
 	errorStackMu.Lock()
-	lastErr, _ = errorStack.PopBack()
+	lastErr, ok = errorStack.PopBack()
 	errorStackMu.Unlock()
+	require.True(t, ok)
 	label = "runtime.Goexit was called"
 	if errStr := lastErr.Error(); !strings.Contains(errStr, label) {
 		t.Fatalf("err message not containing %s, but actually is %s", label, errStr)
@@ -363,12 +375,19 @@ func TestPool_Pause(t *testing.T) {
 	case <-time.After(time.Millisecond):
 	}
 
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return active == 10
+	})
 	assertWorkerNum(10, 0)
 	assertActiveWorker(10)
 
 	for i := 0; i < 10; i++ {
 		workExec.step()
 	}
+
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return active == 0
+	})
 
 	select {
 	case <-pauseReturn:
@@ -392,6 +411,10 @@ func TestPool_Pause(t *testing.T) {
 	}
 	pool.workerCond.L.Unlock()
 
+	// 2 workers return abnormally. alive is reduced to 8.
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 8 && sleeping == 0
+	})
 	assertWorkerNum(8, 0)
 	assertActiveWorker(0)
 

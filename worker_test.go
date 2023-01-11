@@ -65,7 +65,7 @@ func setupWorker() (
 		}()
 		sw <- struct{}{}
 
-		worker.WaitCondition(func(state WorkerState) bool { return state.IsRunning() })
+		worker.WaitUntil(func(state WorkerState) bool { return state.IsRunning() })
 
 		return ctx,
 			cancel,
@@ -85,7 +85,7 @@ func setupWorker() (
 }
 
 func waitUntilRunning[T any](worker *Worker[T]) {
-	worker.WaitCondition(func(state WorkerState) bool { return state.IsRunning() })
+	worker.WaitUntil(func(state WorkerState) bool { return state.IsRunning() })
 }
 
 func TestWorker(t *testing.T) {

@@ -160,7 +160,7 @@ func NewWorker[T any](
 // (2) WorkExecutor returned abnormally (panic or runtime.Goexit),
 // or (3) taskCh is closed.
 func (w *Worker[T]) Run(ctx context.Context) (killed bool, err error) {
-	if w.state.IsEnded() {
+	if w.State().IsEnded() {
 		return false, ErrAlreadyEnded
 	}
 	if !w.start() {
@@ -360,16 +360,25 @@ func (w *Worker[T]) setEnded() bool {
 	return false
 }
 
-func (w *Worker[T]) WaitCondition(condition func(state WorkerState) bool, action ...func()) {
+// WaitUntil waits until condition returns true. actions will be called within lock.
+// If w reaches ended state and the condition is not waiting for w to end, WaitUntil returns false without calling actions,
+// returns true otherwise.
+func (w *Worker[T]) WaitUntil(condition func(state WorkerState) bool, actions ...func()) (ok bool) {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
+
 	for !condition(w.state) {
+		if w.state.IsEnded() {
+			return false
+		}
 		w.stateCond.Wait()
 	}
 
-	for _, act := range action {
+	for _, act := range actions {
 		act()
 	}
+
+	return true
 }
 
 func (w *Worker[T]) State() WorkerState {

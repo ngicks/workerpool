@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,7 +46,7 @@ func (w *worker[T]) Cancel() {
 type Pool[T any] struct {
 	wg sync.WaitGroup
 
-	activeWorkerNum atomic.Int64
+	activeWorkerNum int
 	taskCh          chan T
 
 	workerCond      *sync.Cond
@@ -71,12 +70,22 @@ func New[T any](
 		workerCond:       sync.NewCond(&sync.Mutex{}),
 	}
 
+	add := func(i int) {
+		w.workerCond.L.Lock()
+		w.activeWorkerNum += i
+		w.workerCond.Broadcast()
+		w.workerCond.L.Unlock()
+	}
 	w.constructor = workerConstructor[T]{
-		IdGenerator:   uuid.NewString,
-		Exec:          exec,
-		TaskCh:        w.taskCh,
-		recordReceive: func(T) { w.activeWorkerNum.Add(1) },
-		recordDone:    func(T, error) { w.activeWorkerNum.Add(-1) },
+		IdGenerator: uuid.NewString,
+		Exec:        exec,
+		TaskCh:      w.taskCh,
+		recordReceive: func(T) {
+			add(1)
+		},
+		recordDone: func(T, error) {
+			add(-1)
+		},
 	}
 
 	for _, opt := range options {
@@ -92,9 +101,10 @@ func (p *Pool[T]) Sender() chan<- T {
 	return p.taskCh
 }
 
-func (p *Pool[T]) WaitWorker(condition func(alive, sleeping int) bool, action ...func()) {
+func (p *Pool[T]) WaitUntil(condition func(alive, sleeping, active int) bool, action ...func()) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
+
 	for !condition(p.len()) {
 		p.workerCond.Wait()
 	}
@@ -157,11 +167,16 @@ func (p *Pool[T]) runWorker(
 
 	// see https://cs.opensource.google/go/x/sync/+/0de741cf:singleflight/singleflight.go;l=138-200;drc=0de741cfad7ff3874b219dfbc1b9195b58c7c490
 	defer func() {
-		p.workerCond.L.Lock()
-		p.workers.Delete(worker.id)
-		delete(p.sleepingWorkers, worker.id)
-		p.workerCond.Broadcast()
-		p.workerCond.L.Unlock()
+		// This deletion must be observed *after* abnormalReturnCb is called.
+		// The users might use WaitUntil to detect abnormal returns, then check errors by side effect of abnormalReturnCb.
+		// And also we must do this in deferred func, because abnormalReturnCb might panic.
+		defer func() {
+			p.workerCond.L.Lock()
+			p.workers.Delete(worker.id)
+			delete(p.sleepingWorkers, worker.id)
+			p.workerCond.Broadcast()
+			p.workerCond.L.Unlock()
+		}()
 
 		if !normalReturn && !recovered {
 			abnormalReturnErr = errGoexit
@@ -204,36 +219,43 @@ func (p *Pool[T]) Remove(delta int) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 
-	old := p.workers.Oldest()
-	next := old
-	for next != nil {
-		if delta == 0 {
-			break
+	oldDelta := delta
+	cancelWorker := func(predicate func(w *worker[T]) bool) {
+		old := p.workers.Oldest()
+		next := old
+		for next != nil {
+			if delta == 0 {
+				break
+			}
+			old = next
+			next = old.Next()
+			if predicate(old.Value) {
+				old.Value.Cancel()
+				p.workers.Delete(old.Key)
+				p.sleepingWorkers[old.Key] = old.Value
+				delta--
+			}
 		}
-		old = next
-		next = old.Next()
-		old.Value.Cancel()
-		p.workers.Delete(old.Key)
-		p.sleepingWorkers[old.Key] = old.Value
-		delta--
+	}
+
+	cancelWorker(func(w *worker[T]) bool { return !w.State().IsActive() })
+	cancelWorker(func(w *worker[T]) bool { return true })
+
+	if delta != oldDelta {
+		p.workerCond.Broadcast()
 	}
 }
 
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
-func (p *Pool[T]) Len() (alive, sleeping int) {
+func (p *Pool[T]) Len() (alive, sleeping, active int) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 	return p.len()
 }
 
-func (p *Pool[T]) len() (alive, sleeping int) {
-	return p.workers.Len(), len(p.sleepingWorkers)
-}
-
-// ActiveWorkerNum returns number of actively working worker.
-func (p *Pool[T]) ActiveWorkerNum() int64 {
-	return p.activeWorkerNum.Load()
+func (p *Pool[T]) len() (alive, sleeping, active int) {
+	return p.workers.Len(), len(p.sleepingWorkers), p.activeWorkerNum
 }
 
 // Kill kills all workers.

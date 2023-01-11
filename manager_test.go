@@ -99,11 +99,11 @@ func TestManager(t *testing.T) {
 
 	// building assertions
 	assertAliveWorkerNum := func(alive int) bool {
-		alive_, _ := manager.Len()
+		alive_, _, _ := manager.Len()
 		return assert.Equal(alive, alive_)
 	}
 	assertTotalWorkerNum := func(total int) bool {
-		alive, sleeping := manager.Len()
+		alive, sleeping, _ := manager.Len()
 		return assert.Equal(total, alive+sleeping)
 	}
 	assertWorkerNum := createAssertWorkerNum(t, pool)
@@ -117,7 +117,7 @@ func TestManager(t *testing.T) {
 		return timing.CreateWaiterFn(func() { <-fakeTimer.reset })
 	}
 	waitWorkerNum := func(alive, sleeping int) {
-		manager.WaitWorker(func(alive_, sleeping_ int) bool {
+		manager.WaitWorker(func(alive_, sleeping_, active_ int) bool {
 			return alive == alive_ && sleeping == sleeping_
 		})
 	}
@@ -242,8 +242,7 @@ func TestManager(t *testing.T) {
 
 	waitWorkerNum(10, 0)
 	if !assertTotalWorkerNum(10) {
-		active := manager.ActiveWorkerNum()
-		alive, sleeping := manager.Len()
+		alive, sleeping, active := manager.Len()
 		t.Errorf(
 			"max waiting is 5, must not remove worker: active = %d, (alive, sleeping) = (%d, %d)",
 			active, alive, sleeping,
