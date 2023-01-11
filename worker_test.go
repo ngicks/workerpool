@@ -52,6 +52,12 @@ type workFn struct {
 	onCalledHook func()
 }
 
+func newWorkFn() *workFn {
+	w := &workFn{}
+	w.init()
+	return w
+}
+
 func (w *workFn) MustPanicWith(panicLabel any) {
 	if panicLabel == nil {
 		w.panicLabel = nil
@@ -109,6 +115,12 @@ type recorderHook struct {
 	doneArgs     []doneArg
 }
 
+func newRecorderHook() *recorderHook {
+	r := &recorderHook{}
+	r.init()
+	return r
+}
+
 func (r *recorderHook) init() {
 	r.onReceive = make(chan struct{}, 1) // buffering these channel ease race condition
 	r.onDone = make(chan struct{}, 1)
@@ -141,22 +153,20 @@ func (r *recorderHook) onTaskDone(param idParam, err error) {
 	}
 }
 
-func initWorker() (
+func setupWorker() (
 	worker *Worker[idParam],
 	taskCh chan idParam,
 	workExec *workFn,
 	recorder *recorderHook,
-	runWorker func(run func(ctx context.Context) (killed bool, err error)) (
+	runWorker func(worker *Worker[idParam]) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
 		closedOnRunReturn chan struct{},
 	),
 ) {
-	workExec = &workFn{}
-	workExec.init()
-	recorder = &recorderHook{}
-	recorder.init()
+	workExec = newWorkFn()
+	recorder = newRecorderHook()
 
 	taskCh = make(chan idParam)
 
@@ -167,7 +177,7 @@ func initWorker() (
 		recorder.onTaskDone,
 	)
 
-	runWorker = func(run func(ctx context.Context) (killed bool, err error)) (
+	runWorker = func(worker *Worker[idParam]) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
@@ -177,6 +187,7 @@ func initWorker() (
 		sw := make(chan struct{})
 		var killed bool
 		var err error
+		// race detector complains about this. We are forced to use atomic.Pointer here.
 		var recovered atomic.Pointer[any]
 		go func() {
 			defer func() {
@@ -188,9 +199,11 @@ func initWorker() (
 			}()
 			defer cancel()
 			<-sw
-			killed, err = run(ctx)
+			killed, err = worker.Run(ctx)
 		}()
 		sw <- struct{}{}
+
+		worker.WaitCondition(func(state WorkerState) bool { return state.IsRunning() })
 
 		return ctx,
 			cancel,
@@ -209,11 +222,8 @@ func initWorker() (
 	return worker, taskCh, workExec, recorder, runWorker
 }
 
-func waitUntilRunning(worker interface{ IsRunning() bool }) (ok bool) {
-	return timing.PollUntil(
-		func(ctx context.Context) bool { return worker.IsRunning() },
-		time.Millisecond, 50*time.Millisecond,
-	)
+func waitUntilRunning[T any](worker *Worker[T]) {
+	worker.WaitCondition(func(state WorkerState) bool { return state.IsRunning() })
 }
 
 func TestWorker(t *testing.T) {
@@ -224,25 +234,22 @@ func TestWorker(t *testing.T) {
 		taskCh,
 		workExec,
 		recorder,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
-	require.False(worker.IsRunning(), "IsRunning is true. want == false. it's just created.")
-	require.False(worker.IsEnded(), "IsEnded is true. want == false, it's just created.")
+	require.False(worker.State().IsRunning(), "IsRunning is true. want == false. it's just created.")
+	require.False(worker.State().IsEnded(), "IsEnded is true. want == false, it's just created.")
 
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker.Run)
-
-	// reducing race condition
-	waitUntilRunning(worker)
+		closedOnRunReturn := runWorker(worker)
 
 	var err error
 	_, err = worker.Run(context.TODO())
 	assert.ErrorIs(err, ErrAlreadyRunning)
 
-	assert.True(worker.IsRunning())
-	assert.False(worker.IsEnded())
+	assert.True(worker.State().IsRunning())
+	assert.False(worker.State().IsEnded())
 
 	waiter := timing.CreateWaiterFn(func() { <-workExec.called })
 	taskCh <- idParam{0}
@@ -285,25 +292,25 @@ func TestWorker(t *testing.T) {
 	cancelRun()
 	<-closedOnRunReturn
 
-	assert.False(worker.IsRunning())
-	assert.False(worker.IsEnded())
+	assert.False(worker.State().IsRunning())
+	assert.False(worker.State().IsEnded())
 
 	assertCallCount(2, 2, 2)
 
 	// re-run
-	_, cancelRun, _, closedOnRunReturn = runWorker(worker.Run)
+	_, cancelRun, _, closedOnRunReturn = runWorker(worker)
 
 	taskCh <- idParam{2}
-	assert.True(worker.IsRunning())
-	assert.False(worker.IsEnded())
+	assert.True(worker.State().IsRunning())
+	assert.False(worker.State().IsEnded())
 
 	<-workExec.called
 	workExec.step()
 	cancelRun()
 	<-closedOnRunReturn
 
-	assert.False(worker.IsRunning())
-	assert.False(worker.IsEnded())
+	assert.False(worker.State().IsRunning())
+	assert.False(worker.State().IsEnded())
 
 	assertCallCount(3, 3, 3)
 
@@ -334,12 +341,12 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 		taskCh,
 		workExec,
 		_,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		cancelRun,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -348,13 +355,13 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	taskCh <- idParam{}
 	<-workExec.called
 	worker.Kill()
-	assert.True(worker.IsRunning())
-	assert.True(worker.IsEnded())
+	assert.True(worker.State().IsRunning())
+	assert.True(worker.State().IsEnded())
 	workExec.step()
 	<-closedOnRunReturn
 
-	assert.False(worker.IsRunning())
-	assert.True(worker.IsEnded())
+	assert.False(worker.State().IsRunning())
+	assert.True(worker.State().IsEnded())
 
 	// get return value of worker.Run
 	killed, _, err := runRetValue()
@@ -380,12 +387,12 @@ func TestWorker_killed_when_taskCh_is_closed(t *testing.T) {
 		taskCh,
 		workExec,
 		_,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		_,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 
 	defer func() {
 		<-closedOnRunReturn
@@ -394,7 +401,7 @@ func TestWorker_killed_when_taskCh_is_closed(t *testing.T) {
 
 	taskCh <- idParam{}
 	<-workExec.called
-	assert.True(worker.IsRunning())
+	assert.True(worker.State().IsRunning())
 	workExec.step()
 	close(taskCh)
 
@@ -412,12 +419,12 @@ func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 		taskCh,
 		workExec,
 		recorderHook,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		_,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 
 	workExec.MustPanicWith("foo")
 
@@ -428,8 +435,8 @@ func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 	killed, recovered, err := runRetValue()
 
 	assert.False(killed)
-	assert.True(worker.IsEnded())
-	assert.False(worker.IsRunning())
+	assert.True(worker.State().IsEnded())
+	assert.False(worker.State().IsRunning())
 	assert.NoError(err)
 	assert.NotNil(recovered)
 	assert.Equal(recovered.(string), "foo")
@@ -443,12 +450,12 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 		taskCh,
 		workExec,
 		recorderHook,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		_,
 		_,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 
 	workExec.onCalledHook = func() {
 		runtime.Goexit()
@@ -458,8 +465,8 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 
 	<-closedOnRunReturn
 
-	assert.True(worker.IsEnded())
-	assert.False(worker.IsRunning())
+	assert.True(worker.State().IsEnded())
+	assert.False(worker.State().IsRunning())
 	assert.ErrorIs(recorderHook.doneArgs[0].Err, ErrAbnormalReturn)
 }
 
@@ -470,30 +477,26 @@ func TestWorker_pause(t *testing.T) {
 		taskCh,
 		workExec,
 		_,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 	defer func() {
 		<-closedOnRunReturn
 	}()
 	defer cancelRun()
 
-	// runWorker switches context to the dedicated goroutine that runs worker.Run.
-	// We could not avoid this race condition, but adding small wait on this should suffice.
-	waitUntilRunning(worker)
-
-	assert.True(worker.IsRunning(), "IsRunning: just started running")
-	assert.False(worker.IsPaused(), "IsPaused: just started running")
-	assert.False(worker.IsEnded(), "IsEnded: just started running")
+	assert.True(worker.State().IsRunning(), "IsRunning: just started running")
+	assert.False(worker.State().IsPaused(), "IsPaused: just started running")
+	assert.False(worker.State().IsEnded(), ".IsEnded: just started running")
 
 	cont, err := worker.Pause(context.Background(), time.Hour)
 	assert.NoError(err)
-	assert.False(worker.IsRunning(), "IsRunning: right after Pause returns")
-	assert.True(worker.IsPaused(), "IsPaused: right after Pause returns")
-	assert.False(worker.IsEnded(), "IsEnded: right after Pause returns")
+	assert.False(worker.State().IsRunning(), "IsRunning: right after Pause returns")
+	assert.True(worker.State().IsPaused(), "IsPaused: right after Pause returns")
+	assert.False(worker.State().IsEnded(), "IsEnded: right after Pause returns")
 
 	dur := time.Millisecond
 	select {
@@ -504,9 +507,9 @@ func TestWorker_pause(t *testing.T) {
 
 	cont()
 
-	assert.True(worker.IsRunning(), "IsRunning: right after continueWorker returns")
-	assert.False(worker.IsPaused(), "IsPaused: right after Pause returns")
-	assert.False(worker.IsEnded(), "IsEnded: right after Pause returns")
+	assert.True(worker.State().IsRunning(), "IsRunning: right after continueWorker returns")
+	assert.False(worker.State().IsPaused(), "IsPaused: right after Pause returns")
+	assert.False(worker.State().IsEnded(), "IsEnded: right after Pause returns")
 
 	timeout := time.Second
 	select {
@@ -594,12 +597,12 @@ func TestWorker_pause_is_released_immediately_after_Kill(t *testing.T) {
 		_,
 		_,
 		_,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -627,12 +630,12 @@ func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
 		taskCh,
 		workExec,
 		_,
-		runWorker := initWorker()
+		runWorker := setupWorker()
 
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker.Run)
+		closedOnRunReturn := runWorker(worker)
 	defer func() {
 		<-closedOnRunReturn
 	}()

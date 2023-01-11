@@ -378,7 +378,7 @@ func TestPool_Pause(t *testing.T) {
 
 	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
-		assert.True(pair.Value.IsPaused(), "worker: %+v", pair.Value)
+		assert.True(pair.Value.State().IsPaused(), "worker: %+v", pair.Value)
 	}
 	pool.workerCond.L.Unlock()
 
@@ -388,7 +388,7 @@ func TestPool_Pause(t *testing.T) {
 
 	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
-		assert.False(pair.Value.IsPaused())
+		assert.False(pair.Value.State().IsPaused())
 	}
 	pool.workerCond.L.Unlock()
 
@@ -524,7 +524,7 @@ func TestPool_Pause_cancelling_context(t *testing.T) {
 
 	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
-		assert.False(pair.Value.IsPaused())
+		assert.False(pair.Value.State().IsPaused())
 	}
 	pool.workerCond.L.Unlock()
 }

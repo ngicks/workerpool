@@ -9,18 +9,42 @@ import (
 	"github.com/ngicks/gommon/pkg/common"
 )
 
-type RunningState int32
+type WorkerState int32
 
 const (
-	Stopped RunningState = iota
+	Stopped WorkerState = iota
 	Running
 	Paused
 )
 
 const (
-	Ended = 100 + iota
-	KilledStillRunning
+	EndedMask WorkerState = 1 << 16
 )
+
+func (s WorkerState) set(state WorkerState) WorkerState {
+	return s&EndedMask | state
+}
+
+func (s WorkerState) setEnded() WorkerState {
+	return s | EndedMask
+}
+func (s WorkerState) unsetEnded() WorkerState {
+	return s &^ EndedMask
+}
+
+func (s WorkerState) State() (state WorkerState, isEnded bool) {
+	return s.unsetEnded(), s.IsEnded()
+}
+
+func (s WorkerState) IsEnded() bool {
+	return s&EndedMask > 0
+}
+func (s WorkerState) IsRunning() bool {
+	return s&Running > 0
+}
+func (s WorkerState) IsPaused() bool {
+	return s&Paused > 0
+}
 
 // swap out this if tests need to.
 var timerFactory = func() common.ITimer {
@@ -51,8 +75,7 @@ var _ WorkExecuter[int] = WorkFn[int](nil)
 // or ended-state where no way is given to step back into working-state again.
 type Worker[T any] struct {
 	stateCond *sync.Cond
-	isRunning RunningState // 0 = stopped, 1 = running, 2 = paused
-	isEnded   int32
+	state     WorkerState
 
 	killCh  chan struct{}
 	pauseCh chan func()
@@ -104,7 +127,7 @@ func NewWorker[T any](
 // (2) WorkExecutor returned abnormally (panic or runtime.Goexit),
 // or (3) taskCh is closed.
 func (w *Worker[T]) Run(ctx context.Context) (killed bool, err error) {
-	if w.IsEnded() {
+	if w.state.IsEnded() {
 		return false, ErrAlreadyEnded
 	}
 	if !w.start() {
@@ -119,7 +142,7 @@ func (w *Worker[T]) Run(ctx context.Context) (killed bool, err error) {
 			w.Kill()
 			return
 		}
-		if w.IsEnded() {
+		if w.state.IsEnded() {
 			killed = true
 			return
 		}
@@ -194,7 +217,7 @@ func (w *Worker[T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorker func() (cancelled bool), err error) {
-	if !w.IsRunning() {
+	if !w.State().IsRunning() {
 		return nil, ErrNotRunning
 	}
 	pauseFnIsCalled := make(chan struct{})
@@ -281,58 +304,42 @@ func (w *Worker[T]) Kill() {
 	}
 }
 
-func (w *Worker[T]) IsEnded() bool {
-	w.stateCond.L.Lock()
-	defer w.stateCond.L.Unlock()
-	return w.isEnded == 1
-}
-
 func (w *Worker[T]) setEnded() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
-	if w.isEnded == 0 {
-		w.isEnded = 1
+	if !w.state.IsEnded() {
+		w.state = w.state.setEnded()
 		return true
 	}
 	return false
 }
 
-func (w *Worker[T]) IsRunning() bool {
+func (w *Worker[T]) WaitCondition(condition func(state WorkerState) bool, action ...func()) {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
-
-	return w.isRunning == Running
-}
-
-func (w *Worker[T]) IsPaused() bool {
-	w.stateCond.L.Lock()
-	defer w.stateCond.L.Unlock()
-
-	return w.isRunning == Paused
-}
-
-func (w *Worker[T]) State() RunningState {
-	w.stateCond.L.Lock()
-	defer w.stateCond.L.Unlock()
-
-	isRunning := w.isRunning
-	isEnded := w.isEnded
-
-	if isEnded == 0 {
-		return RunningState(isRunning)
-	} else if isRunning != Stopped {
-		return KilledStillRunning
+	for !condition(w.state) {
+		w.stateCond.Wait()
 	}
-	return Ended
+
+	for _, act := range action {
+		act()
+	}
+}
+
+func (w *Worker[T]) State() WorkerState {
+	w.stateCond.L.Lock()
+	defer w.stateCond.L.Unlock()
+
+	return w.state
 }
 
 func (w *Worker[T]) start() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
-	if w.isRunning == Stopped {
-		w.isRunning = Running
+	if !w.state.IsRunning() {
+		w.state = w.state.set(Running)
 		return true
 	}
 	return false
@@ -342,8 +349,8 @@ func (w *Worker[T]) stop() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
-	if w.isRunning == Running {
-		w.isRunning = Stopped
+	if w.state.IsRunning() {
+		w.state = w.state.set(Stopped)
 		return true
 	}
 	return false
@@ -351,12 +358,12 @@ func (w *Worker[T]) stop() bool {
 
 func (w *Worker[T]) pause() {
 	w.stateCond.L.Lock()
-	w.isRunning = Paused
+	w.state = w.state.set(Paused)
 	w.stateCond.L.Unlock()
 }
 
 func (w *Worker[T]) unpause() {
 	w.stateCond.L.Lock()
-	w.isRunning = Running
+	w.state = w.state.set(Running)
 	w.stateCond.L.Unlock()
 }
