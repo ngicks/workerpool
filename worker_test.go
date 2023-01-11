@@ -76,6 +76,16 @@ func (w *workFn) step() {
 	w.stepper <- struct{}{}
 }
 
+func (w *workFn) ExhaustCalledCh() {
+	for {
+		select {
+		case <-w.called:
+		default:
+			return
+		}
+	}
+}
+
 func (w *workFn) Exec(ctx context.Context, param idParam) error {
 	select {
 	case w.called <- struct{}{}:

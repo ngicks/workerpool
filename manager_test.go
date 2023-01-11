@@ -77,21 +77,13 @@ func (t *fakeTimer) ExhaustResetCh() {
 func TestManager(t *testing.T) {
 	assert := assert.New(t)
 
-	workExec := &workFn{}
-	workExec.init()
-
-	recorderHook := &recorderHook{}
-	recorderHook.init()
-
-	waitExecReturn := func() (waiter func()) {
-		return timing.CreateWaiterFn(func() { <-recorderHook.onDone })
-	}
-
+	// setting up the test target.
+	workExec := newWorkFn()
+	recorderHook := newRecorderHook()
 	pool := New[idParam](
 		workExec,
 		SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
-
 	manager := NewManager(
 		pool, 31,
 		SetMaxWaiting[idParam](5),
@@ -99,6 +91,13 @@ func TestManager(t *testing.T) {
 		SetRemovalInterval[idParam](500*time.Millisecond),
 	)
 
+	// mocking out internal timer.
+	fakeTimer := newFakeTimer()
+	manager.timerFactory = func() common.ITimer {
+		return fakeTimer
+	}
+
+	// building assertions
 	assertAliveWorkerNum := func(alive int) bool {
 		alive_, _ := manager.Len()
 		return assert.Equal(alive, alive_)
@@ -110,9 +109,27 @@ func TestManager(t *testing.T) {
 	assertWorkerNum := createAssertWorkerNum(t, pool)
 	assertActiveWorker := createAssertActiveWorker(t, pool)
 
+	// building synchronization helper
+	waitExecReturn := func() (waiter func()) {
+		return timing.CreateWaiterFn(func() { <-recorderHook.onDone })
+	}
+	waitTimerReset := func() (waiter func()) {
+		return timing.CreateWaiterFn(func() { <-fakeTimer.reset })
+	}
+	waitWorkerNum := func(alive, sleeping int) {
+		manager.WaitWorker(func(alive_, sleeping_ int) bool {
+			return alive == alive_ && sleeping == sleeping_
+		})
+	}
+
+	// building helper
+	idParamFactory := createIdParamFactory()
+
+	// avoid goroutine leak
 	defer manager.Wait()
 	defer manager.Kill()
 
+	// just naming intent.
 	unblockAllWorkExec := func() {
 		for i := 0; i < 100; i++ {
 			select {
@@ -122,18 +139,10 @@ func TestManager(t *testing.T) {
 			}
 		}
 	}
-
+	// avoid timeout
 	defer unblockAllWorkExec()
 
-	fakeTimer := newFakeTimer()
-	manager.timerFactory = func() common.ITimer {
-		return fakeTimer
-	}
-
-	waitTimerReset := func() (waiter func()) {
-		return timing.CreateWaiterFn(func() { <-fakeTimer.reset })
-	}
-
+	// run manager
 	ctx, cancel := context.WithCancel(context.Background())
 	var runRetTask idParam
 	var runRetHadPending bool
@@ -146,8 +155,6 @@ func TestManager(t *testing.T) {
 		close(sw)
 	}()
 	sw <- struct{}{}
-
-	idParamFactory := createIdParamFactory()
 
 	assertWorkerNum(0, 0)
 
@@ -206,30 +213,24 @@ func TestManager(t *testing.T) {
 		waiter := waitTimerReset()
 		fakeTimer.Send(time.Now())
 		waiter()
+
+		waitWorkerNum(31-7*(i+1), 0)
 		assertAliveWorkerNum(31 - 7*(i+1))
 	}
 
 	// at this point, alive worker should be 10
+	assertWorkerNum(10, 0)
 
 	fakeTimer.ExhaustResetCh()
-
-exhaustLoop:
-	for {
-		select {
-		case <-workExec.called:
-		default:
-			break exhaustLoop
-		}
-	}
+	workExec.ExhaustCalledCh()
 
 	for i := 0; i < 5; i++ {
-		waiter := waitTimerReset()
-		waitReceive := timing.CreateWaiterFn(func() { <-workExec.called })
+		waiter := timing.CreateWaiterFn(func() { <-fakeTimer.reset }, func() { <-workExec.called })
 		manager.Sender() <- idParamFactory()
-		waitReceive()
 		waiter()
 	}
 
+	waitWorkerNum(10, 0)
 	if !assertAliveWorkerNum(10) {
 		t.Errorf("sent additional 5 tasks, worker num is not as expected, want = 10 (active 5 + max Waiting 5)")
 	}
@@ -239,9 +240,7 @@ exhaustLoop:
 	fakeTimer.Send(time.Now())
 	waiter()
 
-	pool.WaitWorker(func(alive, sleeping int) bool {
-		return alive+sleeping == 10
-	})
+	waitWorkerNum(10, 0)
 	if !assertTotalWorkerNum(10) {
 		active := manager.ActiveWorkerNum()
 		alive, sleeping := manager.Len()
@@ -276,9 +275,7 @@ exhaustLoop:
 	fakeTimer.Send(time.Now())
 	waiter()
 
-	pool.WaitWorker(func(alive, sleeping int) bool {
-		return alive == 5 && sleeping == 0
-	})
+	waitWorkerNum(5, 0)
 	assertWorkerNum(5, 0)
 
 	// finally close sender
@@ -288,6 +285,4 @@ exhaustLoop:
 	assert.Equal(0, runRetTask.Id)
 	assert.False(runRetHadPending)
 	assert.ErrorIs(runRetErr, ErrInputChanClosed)
-
-	unblockAllWorkExec()
 }
