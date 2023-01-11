@@ -2,174 +2,85 @@
 
 workerpool implements the fan-out pattern nicely.
 
-## example
-
 ```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"math"
-	"math/rand"
-	"runtime"
-	"time"
-
-	"github.com/ngicks/workerpool"
-)
-
-func main() {
-	exec := workerpool.WorkFn[int](
-		func(ctx context.Context, num int) error {
-			time.Sleep((time.Duration(rand.Int31n(1000)) + 1000) * time.Millisecond)
-			fmt.Printf("%d,", num)
+// Task Executor
+// This function will be called with each task T.
+// ctx is cancelled only if worker.Kill() is called,
+// So func must respect ctx if work take long time to complete.
+exec := workerpool.WorkFn[int](
+	func(ctx context.Context, task int) error {
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
 			return nil
-		},
-	)
-	pool := workerpool.New[int](exec)
-
-	fmt.Println("Adding 1 goroutine; for sending tasks.")
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 100; i++ {
-			pool.SenderChan() <- i
 		}
-		fmt.Println("\nEnding 1 goroutine; task sending done.")
-		close(done)
-	}()
+		fmt.Printf("%d,", task)
+		return nil
+	},
+)
+// Worker pool can be created with New.
+pool := workerpool.New[int](exec)
 
-	fmt.Println("Adding 1 goroutine; for logging.")
-	stopLog := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stopLog:
-				return
-			default:
-			}
+// Add workers to the pool.
+// This creates additional n goroutines by return of Add.
+pool.Add(32)
 
-			activeWorker := pool.ActiveWorkerNum()
-			goroutines := runtime.NumGoroutine()
-			active, sleeping := pool.Len()
-			fmt.Printf(
-				"\nCurrent active worker: %d\n"+
-					"Current goroutine num: %d\n"+
-					"Alive worker = %d, Sleeping worker = %d.\n",
-				activeWorker,
-				goroutines,
-				active, sleeping,
-			)
-
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
-
-	fmt.Printf("Current goroutine num: %d\n", runtime.NumGoroutine())
-	fmt.Println("Adding 32 workers")
-	pool.Add(32)
-
-	time.Sleep(500 * time.Millisecond)
-
-	pool.Remove(16)
-	fmt.Println("Requested to remove 16 workers.")
-
-	<-done
-
-	time.Sleep(time.Second)
-	pool.Remove(math.MaxUint32)
-	pool.Wait()
-	<-time.After(time.Second)
-	close(stopLog)
-	fmt.Println("\nDone.")
+for i := 0; i < 32; i++ {
+	// Sender() returns chan<- T
+	// You can send tasks through this channel.
+	pool.Sender() <- i
 }
 
+// This is merely fan-out pattern.
+// If all workers are busy, this send will block until at least 1 tasks is done.
+pool.Sender() <- 32
+
+// Remove removes workers from the pool.
+pool.Remove(16)
+// Len returns number of workers
+fmt.Println(pool.Len())
+// This should print like, 16, 16, 32
+// These values report number of alive worker, sleeping worker (busy but removed worker),
+// and active worker (currently is busy).
+// sleeping workers may eventually become 0, since it is not receiving new tasks.
+
+// You can use WaitUntil to observe and wait for state change.
+pool.WaitUntil(func(alive, sleeping, active int) bool {
+	return alive == 16 && active == 0
+})
+
+// You can use the Manager[T] as well.
+// This gradually increases pool's workers to max worker,
+// or decreases when manager is idle.
+manager := pool.NewManager(
+	/* pool = */		pool,
+	/* max worker = */	31,
+	workerpool.SetMaxWaiting[int](5),
+	workerpool.SetRemovalBatchSize[int](7),
+	workerpool.SetRemovalInterval[int](500*time.Millisecond),
+)
+
+ctx, cancel := context.WithCancel(context.Background())
+go manager.Run(ctx)
+
+// ...later...
+cancel()
+
+
+pool.Remove(math.MaxInt64)
+// or
+manager.Kill() // pool.Kill() is also ok.
+// Wait-s until all worker stop its goroutine.
+manager.Wait() // pool.Wait() is also ok.
 ```
 
-```
-go run example/main.go
-Adding 1 goroutine; for sending tasks.
-Adding 1 goroutine; for logging.
-Current goroutine num: 3
-Adding 32 workers
+## Features
 
-Current active worker: 1
-Current goroutine num: 35
-Alive worker = 32, Sleeping worker = 0.
-Requested to remove 16 workers.
+- Workers can be added / removed dynamically.
+- Hookable: task receive / done events can be hooked by setting Option to New.
+- Immune to panicking: task abnormal returns are recovered and hooked. You can observe abnormal returns by setting Option to New.
+- Type param enabled.
 
-Current active worker: 32
-Current goroutine num: 35
-Alive worker = 16, Sleeping worker = 16.
+## example
 
-Current active worker: 32
-Current goroutine num: 35
-Alive worker = 16, Sleeping worker = 16.
-22,23,21,0,8,14,9,13,3,2,26,11,25,17,6,12,20,10,16,30,4,
-Current active worker: 19
-Current goroutine num: 22
-Alive worker = 16, Sleeping worker = 3.
-19,31,7,29,18,15,27,5,1,28,24,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-32,39,35,34,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-41,42,38,33,37,40,45,36,46,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-44,43,47,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-48,54,49,52,53,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-51,59,60,50,63,57,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-55,58,61,56,64,62,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-67,66,72,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-65,75,68,71,70,74,69,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-77,73,76,79,80,82,
-Current active worker: 16
-Current goroutine num: 19
-Alive worker = 16, Sleeping worker = 0.
-83,85,86,
-Ending 1 goroutine; task sending done.
-78,84,89,81,
-Current active worker: 12
-Current goroutine num: 18
-Alive worker = 16, Sleeping worker = 0.
-93,87,91,
-Current active worker: 9
-Current goroutine num: 18
-Alive worker = 16, Sleeping worker = 0.
-92,88,90,98,95,
-Current active worker: 4
-Current goroutine num: 6
-Alive worker = 0, Sleeping worker = 4.
-96,94,99,97,
-Current active worker: 0
-Current goroutine num: 2
-Alive worker = 0, Sleeping worker = 0.
-
-Current active worker: 0
-Current goroutine num: 2
-Alive worker = 0, Sleeping worker = 0.
-
-Done.
-```
+see and run [example](./example/main.go)

@@ -33,7 +33,7 @@ func SetAbnormalReturnCb[T any](cb func(err error)) Option[T] {
 }
 
 // SetLogOnAbnormalReturn is an Option that
-// replaces abnormal-return cb which simply calls log.Println with an error.
+// replaces abnormal-return cb with one that simply calls log.Println with the error.
 func SetLogOnAbnormalReturn[T any]() Option[T] {
 	return func(p *Pool[T]) {
 		p.onAbnormalReturn = func(err error) { log.Println(err) }
@@ -50,7 +50,7 @@ func SetHook[T any](onTaskReceive func(T), onTaskDone func(T, error)) Option[T] 
 
 // DisableActiveWorkerNumRecord is an Option that disables
 // p's default active-worker-record behavior.
-// If this option is passed to New, p's ActiveWorkerNum always returns 0.
+// If this option is passed to New, p's Len always reports 0 active worker.
 func DisableActiveWorkerNumRecord[T any]() Option[T] {
 	return func(p *Pool[T]) {
 		p.constructor.recordReceive = nil

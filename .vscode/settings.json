@@ -2,8 +2,11 @@
   "cSpell.words": [
     "Deque",
     "gommon",
+    "goroutines",
+    "Hookable",
     "ngicks",
     "orderedmap",
+    "Println",
     "stretchr",
     "workerpool"
   ]
