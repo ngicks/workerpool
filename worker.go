@@ -18,11 +18,34 @@ const (
 )
 
 const (
-	EndedMask WorkerState = 1 << 16
+	EndedMask  WorkerState = 1 << 16
+	ActiveMask WorkerState = 1 << 17
 )
 
+func (s WorkerState) name() string {
+	state, isEnded := s.State()
+	isActive := s.IsActive()
+	var suffix string
+	if isEnded {
+		suffix = "Ended"
+	} else if isActive {
+		suffix = "Active"
+	}
+
+	var name string
+	switch state {
+	case Stopped:
+		name = "stopped"
+	case Running:
+		name = "running"
+	case Paused:
+		name = "paused"
+	}
+	return name + suffix
+}
+
 func (s WorkerState) set(state WorkerState) WorkerState {
-	return s&EndedMask | state
+	return s&(EndedMask|ActiveMask) | state&^(EndedMask|ActiveMask)
 }
 
 func (s WorkerState) setEnded() WorkerState {
@@ -32,8 +55,15 @@ func (s WorkerState) unsetEnded() WorkerState {
 	return s &^ EndedMask
 }
 
+func (s WorkerState) setActive() WorkerState {
+	return s | ActiveMask
+}
+func (s WorkerState) unsetActive() WorkerState {
+	return s &^ ActiveMask
+}
+
 func (s WorkerState) State() (state WorkerState, isEnded bool) {
-	return s.unsetEnded(), s.IsEnded()
+	return s.unsetEnded().unsetActive(), s.IsEnded()
 }
 
 func (s WorkerState) IsEnded() bool {
@@ -44,6 +74,9 @@ func (s WorkerState) IsRunning() bool {
 }
 func (s WorkerState) IsPaused() bool {
 	return s&Paused > 0
+}
+func (s WorkerState) IsActive() bool {
+	return s&ActiveMask > 0
 }
 
 // swap out this if tests need to.
@@ -172,6 +205,17 @@ loop:
 					break loop
 				}
 				func() {
+					w.stateCond.L.Lock()
+					w.state = w.state.setActive()
+					w.stateCond.Broadcast()
+					w.stateCond.L.Unlock()
+					defer func() {
+						w.stateCond.L.Lock()
+						w.state = w.state.unsetActive()
+						w.stateCond.Broadcast()
+						w.stateCond.L.Unlock()
+					}()
+
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 

@@ -32,22 +32,33 @@ func TestState(t *testing.T) {
 		assert.Equal(testCase.isEnded, isEnded, testCase.label)
 	}
 
-	for _, input := range []WorkerState{Stopped, EndedMask} {
+	for _, input := range []WorkerState{Stopped, EndedMask, ActiveMask, Running.setActive()} {
+		name := input.name()
 		isEnded := input.IsEnded()
+		isActive := input.IsActive()
 
 		running := input.set(Running)
 		s, _ := running.State()
-		assert.Equal(Running, s)
-		assert.Equal(isEnded, running.IsEnded())
+		assert.Equal(Running, s, name)
+		assert.Equal(isEnded, running.IsEnded(), name)
+		assert.Equal(isActive, running.IsActive(), name)
+
+		ended := running.setEnded()
+		s, _ = running.State()
+		assert.Equal(Running, s, name)
+		assert.Equal(true, ended.IsEnded(), name)
+		assert.Equal(isActive, ended.IsActive(), name)
 
 		paused := running.set(Paused)
 		s, _ = paused.State()
-		assert.Equal(Paused, s)
-		assert.Equal(isEnded, paused.IsEnded())
+		assert.Equal(Paused, s, name)
+		assert.Equal(isEnded, paused.IsEnded(), name)
+		assert.Equal(isActive, running.IsActive(), name)
 
 		stopped := paused.set(Stopped)
 		s, _ = stopped.State()
-		assert.Equal(Stopped, s)
-		assert.Equal(isEnded, stopped.IsEnded())
+		assert.Equal(Stopped, s, name)
+		assert.Equal(isEnded, stopped.IsEnded(), name)
+		assert.Equal(isActive, running.IsActive(), name)
 	}
 }
