@@ -310,6 +310,7 @@ func (w *Worker[T]) setEnded() bool {
 
 	if !w.state.IsEnded() {
 		w.state = w.state.setEnded()
+		w.stateCond.Broadcast()
 		return true
 	}
 	return false
@@ -340,6 +341,7 @@ func (w *Worker[T]) start() bool {
 
 	if !w.state.IsRunning() {
 		w.state = w.state.set(Running)
+		w.stateCond.Broadcast()
 		return true
 	}
 	return false
@@ -351,6 +353,7 @@ func (w *Worker[T]) stop() bool {
 
 	if w.state.IsRunning() {
 		w.state = w.state.set(Stopped)
+		w.stateCond.Broadcast()
 		return true
 	}
 	return false
@@ -359,11 +362,13 @@ func (w *Worker[T]) stop() bool {
 func (w *Worker[T]) pause() {
 	w.stateCond.L.Lock()
 	w.state = w.state.set(Paused)
+	w.stateCond.Broadcast()
 	w.stateCond.L.Unlock()
 }
 
 func (w *Worker[T]) unpause() {
 	w.stateCond.L.Lock()
 	w.state = w.state.set(Running)
+	w.stateCond.Broadcast()
 	w.stateCond.L.Unlock()
 }
