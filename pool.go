@@ -167,23 +167,20 @@ func (p *Pool[T]) runWorker(
 
 	// see https://cs.opensource.google/go/x/sync/+/0de741cf:singleflight/singleflight.go;l=138-200;drc=0de741cfad7ff3874b219dfbc1b9195b58c7c490
 	defer func() {
-		// This deletion must be observed *after* abnormalReturnCb is called.
-		// The users might use WaitUntil to detect abnormal returns, then check errors by side effect of abnormalReturnCb.
-		// And also we must do this in deferred func, because abnormalReturnCb might panic.
-		defer func() {
-			p.workerCond.L.Lock()
-			p.workers.Delete(worker.id)
-			delete(p.sleepingWorkers, worker.id)
-			p.workerCond.Broadcast()
-			p.workerCond.L.Unlock()
-		}()
-
 		if !normalReturn && !recovered {
 			abnormalReturnErr = errGoexit
 		}
 		if !normalReturn {
 			abnormalReturnCb(abnormalReturnErr)
 		}
+		// This deletion must be observed *after* abnormalReturnCb is called.
+		// The users might use WaitUntil to detect abnormal returns, then check errors by side effect of abnormalReturnCb.
+		p.workerCond.L.Lock()
+		p.workers.Delete(worker.id)
+		delete(p.sleepingWorkers, worker.id)
+		p.workerCond.Broadcast()
+		p.workerCond.L.Unlock()
+
 		if recovered && !shouldRecover {
 			panic(abnormalReturnErr)
 		}
