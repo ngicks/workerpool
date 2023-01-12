@@ -2,77 +2,13 @@ package workerpool
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/ngicks/gommon/pkg/common"
 	"github.com/ngicks/gommon/pkg/timing"
-	"github.com/ngicks/type-param-common/slice"
 	"github.com/stretchr/testify/assert"
 )
-
-var _ common.ITimer = newFakeTimer()
-
-type fakeTimer struct {
-	sync.Mutex
-	blockOn chan struct{}
-	channel chan time.Time
-	resetTo slice.Deque[any] // time.Duration | time.Time | nil
-	reset   chan any         // time.Duration | time.Time
-	started bool
-}
-
-func newFakeTimer() *fakeTimer {
-	return &fakeTimer{
-		blockOn: make(chan struct{}),
-		channel: make(chan time.Time),
-		reset:   make(chan any, 1),
-	}
-}
-
-func (t *fakeTimer) Channel() <-chan time.Time {
-	return t.channel
-}
-func (t *fakeTimer) Reset(d time.Duration) {
-	t.Lock()
-	defer t.Unlock()
-	t.started = true
-	t.resetTo.PushBack(d)
-	select {
-	case t.reset <- d:
-	default:
-	}
-}
-func (t *fakeTimer) ResetTo(to time.Time) {
-	t.Lock()
-	defer t.Unlock()
-	t.started = true
-	t.resetTo.PushBack(to)
-	select {
-	case t.reset <- to:
-	default:
-	}
-}
-func (t *fakeTimer) Stop() {
-	t.Lock()
-	defer t.Unlock()
-	t.started = false
-	t.resetTo.Push(nil)
-}
-func (t *fakeTimer) Send(tt time.Time) {
-	t.channel <- tt
-}
-
-func (t *fakeTimer) ExhaustResetCh() {
-	for {
-		select {
-		case <-t.reset:
-		default:
-			return
-		}
-	}
-}
 
 func TestManager(t *testing.T) {
 	assert := assert.New(t)
@@ -92,8 +28,8 @@ func TestManager(t *testing.T) {
 	)
 
 	// mocking out internal timer.
-	fakeTimer := newFakeTimer()
-	manager.timerFactory = func() common.ITimer {
+	fakeTimer := common.NewTimerFake()
+	manager.timerFactory = func() common.Timer {
 		return fakeTimer
 	}
 
@@ -114,7 +50,7 @@ func TestManager(t *testing.T) {
 		return timing.CreateWaiterFn(func() { <-recorderHook.onDone })
 	}
 	waitTimerReset := func() (waiter func()) {
-		return timing.CreateWaiterFn(func() { <-fakeTimer.reset })
+		return timing.CreateWaiterFn(func() { <-fakeTimer.ResetCh })
 	}
 	waitWorkerNum := func(alive, sleeping int) {
 		manager.WaitWorker(func(alive_, sleeping_, active_ int) bool {
@@ -225,7 +161,7 @@ func TestManager(t *testing.T) {
 	workExec.ExhaustCalledCh()
 
 	for i := 0; i < 5; i++ {
-		waiter := timing.CreateWaiterFn(func() { <-fakeTimer.reset }, func() { <-workExec.called })
+		waiter := timing.CreateWaiterFn(func() { <-fakeTimer.ResetCh }, func() { <-workExec.called })
 		manager.Sender() <- idParamFactory()
 		waiter()
 	}

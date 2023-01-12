@@ -22,7 +22,7 @@ type Manager[T any] struct {
 	removalBatchSize int
 	removalInterval  time.Duration
 
-	timerFactory func() common.ITimer
+	timerFactory func() common.Timer
 }
 
 func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]) *Manager[T] {
@@ -55,7 +55,7 @@ func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err erro
 		case <-ctx.Done():
 			var zero T
 			return zero, false, nil
-		case <-timer.Channel():
+		case <-timer.C():
 			alive, sleeping, active := m.pool.Len()
 			if alive == 0 {
 				// does not need to reset timer here...

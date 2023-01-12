@@ -80,8 +80,8 @@ func (s WorkerState) IsActive() bool {
 }
 
 // swap out this if tests need to.
-var timerFactory = func() common.ITimer {
-	return common.NewTimerImpl()
+var timerFactory = func() common.Timer {
+	return common.NewTimerReal()
 }
 
 // WorkExecuter is an executor of tasks.
@@ -119,7 +119,7 @@ type Worker[T any] struct {
 	onTaskDone     func(param T, err error)
 	cancelFn       atomic.Pointer[context.CancelFunc]
 
-	timerFactory func() common.ITimer
+	timerFactory func() common.Timer
 }
 
 // NewWorker returns initialized Worker.
@@ -317,7 +317,7 @@ func (w *Worker[T]) Pause(
 
 	go func() {
 		select {
-		case <-timer.Channel():
+		case <-timer.C():
 		case <-continueCh:
 		case <-w.killCh:
 		}
