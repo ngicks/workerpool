@@ -52,7 +52,7 @@ pool.WaitUntil(func(alive, sleeping, active int) bool {
 // You can use the Manager[T] as well.
 // This gradually increases pool's workers to max worker,
 // or decreases when manager is idle.
-manager := pool.NewManager(
+manager := workerpool.NewManager(
 	/* pool = */		pool,
 	/* max worker = */	31,
 	workerpool.SetMaxWaiting[int](5),
