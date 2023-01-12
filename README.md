@@ -77,9 +77,21 @@ manager.Wait() // pool.Wait() is also ok.
 ## Features
 
 - Workers can be added / removed dynamically.
-- Hookable: task receive / done events can be hooked by setting Option to New.
-- Immune to panicking: task abnormal returns are recovered and hooked. You can observe abnormal returns by setting Option to New.
+- Hookable: task receive / done events can be hooked by setting SetHook Option to New.
+- Immune to panicking
+  - Task abnormal returns are recovered and hooked.
+  - You can observe abnormal returns by setting SetAbnormalReturnCb Option to New.
 - Type param enabled.
+- Split command and client
+  - With generics, task can be any arbitrary type T. Now you can send whatever you need to.
+    - Typical implementations used `func()`.
+  - This brings opportunity of split the task executor and the task itself.
+  - To identify tasks, let T have Id.
+- Shut down gracefully.
+  - Instruct pool to stop all its goroutines.
+    - Wait for all current tasks done: remove all workers by calling Remove with math.MaxInt64.
+    - Cancel all contexts for tasks: call Kill. WorkExecutor must respect `context.Context` passed to Exec and return on `<-ctx.Done()` receive.
+  - Call `Wait` to wait until all goroutines return.
 
 ## example
 
