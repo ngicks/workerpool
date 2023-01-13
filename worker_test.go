@@ -16,11 +16,11 @@ import (
 // TODO: use hacked timer to test time outs.
 
 func setupWorker() (
-	worker *Worker[idParam],
+	worker *Worker[string, idParam],
 	taskCh chan idParam,
 	workExec *workFn,
 	recorder *recorderHook,
-	runWorker func(worker *Worker[idParam]) (
+	runWorker func(worker *Worker[string, idParam]) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
@@ -32,14 +32,14 @@ func setupWorker() (
 
 	taskCh = make(chan idParam)
 
-	worker = NewWorker[idParam](
+	worker = NewWorker[string, idParam](
 		workExec,
 		taskCh,
 		recorder.onTaskReceived,
 		recorder.onTaskDone,
 	)
 
-	runWorker = func(worker *Worker[idParam]) (
+	runWorker = func(worker *Worker[string, idParam]) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
@@ -61,7 +61,7 @@ func setupWorker() (
 			}()
 			defer cancel()
 			<-sw
-			killed, err = worker.Run(ctx)
+			killed, err = worker.Run(ctx, "foo")
 		}()
 		sw <- struct{}{}
 
@@ -84,7 +84,7 @@ func setupWorker() (
 	return worker, taskCh, workExec, recorder, runWorker
 }
 
-func waitUntilRunning[T any](worker *Worker[T]) {
+func waitUntilRunning[K comparable, T any](worker *Worker[K, T]) {
 	worker.WaitUntil(func(state WorkerState) bool { return state.IsRunning() })
 }
 
@@ -107,7 +107,7 @@ func TestWorker(t *testing.T) {
 		closedOnRunReturn := runWorker(worker)
 
 	var err error
-	_, err = worker.Run(context.TODO())
+	_, err = worker.Run(context.TODO(), "foo")
 	assert.ErrorIs(err, ErrAlreadyRunning)
 
 	assert.True(worker.State().IsRunning())
@@ -232,7 +232,7 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	require.Nil(err)
 	require.True(workExec.args[0].ContextCancelled)
 
-	_, err = worker.Run(context.TODO())
+	_, err = worker.Run(context.TODO(), "foo")
 	require.ErrorIs(err, ErrAlreadyEnded)
 
 	// ensure this does not panic.

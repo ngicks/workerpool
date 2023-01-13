@@ -6,6 +6,7 @@ require (
 	github.com/google/go-cmp v0.5.9
 	github.com/google/uuid v1.3.0
 	github.com/ngicks/gommon/pkg/common v0.1.0
+	github.com/ngicks/gommon/pkg/randstr v0.0.1
 	github.com/ngicks/gommon/pkg/timing v0.0.3
 	github.com/ngicks/type-param-common v0.2.0
 	github.com/stretchr/testify v1.8.1

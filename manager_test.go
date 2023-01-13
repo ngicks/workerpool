@@ -16,15 +16,16 @@ func TestManager(t *testing.T) {
 	// setting up the test target.
 	workExec := newWorkFn()
 	recorderHook := newRecorderHook()
-	pool := New[idParam](
+	pool := New[string, idParam](
 		workExec,
-		SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		NewUuidPool(),
+		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 	manager := NewManager(
 		pool, 31,
-		SetMaxWaiting[idParam](5),
-		SetRemovalBatchSize[idParam](7),
-		SetRemovalInterval[idParam](500*time.Millisecond),
+		SetMaxWaiting[string, idParam](5),
+		SetRemovalBatchSize[string, idParam](7),
+		SetRemovalInterval[string, idParam](500*time.Millisecond),
 	)
 
 	// mocking out internal timer.

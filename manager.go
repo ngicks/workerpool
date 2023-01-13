@@ -13,8 +13,8 @@ var (
 	defaultRemovalInterval  = 2 * time.Second
 )
 
-type Manager[T any] struct {
-	pool *Pool[T]
+type Manager[K comparable, T any] struct {
+	pool *Pool[K, T]
 
 	taskCh           chan T
 	maxWorker        int
@@ -25,8 +25,11 @@ type Manager[T any] struct {
 	timerFactory func() common.Timer
 }
 
-func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]) *Manager[T] {
-	m := &Manager[T]{
+func NewManager[K comparable, T any](pool *Pool[K, T], maxWorker int, options ...ManagerOption[K, T]) *Manager[K, T] {
+	if size := pool.constructor.IdPool.SizeHint(); size > 0 && size < maxWorker {
+		maxWorker = size
+	}
+	m := &Manager[K, T]{
 		pool:             pool,
 		taskCh:           make(chan T),
 		maxWorker:        maxWorker,
@@ -43,7 +46,7 @@ func NewManager[T any](pool *Pool[T], maxWorker int, options ...ManagerOption[T]
 	return m
 }
 
-func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err error) {
+func (m *Manager[K, T]) Run(ctx context.Context) (task T, hadPending bool, err error) {
 	timer := m.timerFactory()
 	resetTimer := func() {
 		timer.Reset(m.removalInterval)
@@ -102,28 +105,32 @@ func (m *Manager[T]) Run(ctx context.Context) (task T, hadPending bool, err erro
 	}
 }
 
+func (m *Manager[K, T]) MaxWorker() int {
+	return m.maxWorker
+}
+
 // Sender is getter of a sender side of the task channel,
 // where you can send tasks to workers.
-func (m *Manager[T]) Sender() chan<- T {
+func (m *Manager[K, T]) Sender() chan<- T {
 	return m.taskCh
 }
 
-func (m *Manager[T]) WaitWorker(condition func(alive, sleeping, active int) bool, action ...func()) {
+func (m *Manager[K, T]) WaitWorker(condition func(alive, sleeping, active int) bool, action ...func()) {
 	m.pool.WaitUntil(condition, action...)
 }
 
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
-func (m *Manager[T]) Len() (alive, sleeping, active int) {
+func (m *Manager[K, T]) Len() (alive, sleeping, active int) {
 	return m.pool.Len()
 }
 
 // Kill kills all workers.
-func (m *Manager[T]) Kill() {
+func (m *Manager[K, T]) Kill() {
 	m.pool.Kill()
 }
 
-func (m *Manager[T]) Pause(
+func (m *Manager[K, T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorkers func() (cancelled bool), err error) {
@@ -132,6 +139,6 @@ func (m *Manager[T]) Pause(
 
 // Wait waits for all workers to stop.
 // Calling this without Kill and/or Remove all workers may block forever.
-func (m *Manager[T]) Wait() {
+func (m *Manager[K, T]) Wait() {
 	m.pool.Wait()
 }

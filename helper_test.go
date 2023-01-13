@@ -75,7 +75,7 @@ func (w *workFn) ExhaustCalledCh() {
 	}
 }
 
-func (w *workFn) Exec(ctx context.Context, param idParam) error {
+func (w *workFn) Exec(ctx context.Context, id string, param idParam) error {
 	select {
 	case w.called <- struct{}{}:
 	default:

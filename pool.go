@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
@@ -24,48 +23,49 @@ var (
 	ErrAbnormalReturn = errors.New("abnormal return")
 )
 
-type worker[T any] struct {
-	*Worker[T]
-	id       string
+type worker[K comparable, T any] struct {
+	*Worker[K, T]
+	id       K
 	cancelFn context.CancelFunc
 	sync.Mutex
 }
 
-func (w *worker[T]) SetCancelFn(fn context.CancelFunc) {
+func (w *worker[K, T]) SetCancelFn(fn context.CancelFunc) {
 	w.cancelFn = fn
 }
 
-func (w *worker[T]) Cancel() {
+func (w *worker[K, T]) Cancel() {
 	if w.cancelFn != nil {
 		w.cancelFn()
 	}
 }
 
 // Pool is a collection of workers, which
-// holds any number of Worker[T]'s, and runs them in goroutines.
-type Pool[T any] struct {
+// holds any number of Worker[K, T]'s, and runs them in goroutines.
+type Pool[K comparable, T any] struct {
 	wg sync.WaitGroup
 
 	activeWorkerNum int
 	taskCh          chan T
 
 	workerCond      *sync.Cond
-	workers         *orderedmap.OrderedMap[string, *worker[T]]
-	sleepingWorkers map[string]*worker[T]
+	workers         *orderedmap.OrderedMap[K, *worker[K, T]]
+	sleepingWorkers map[K]*worker[K, T]
 
-	constructor      workerConstructor[T]
+	constructor      workerConstructor[K, T]
 	onAbnormalReturn func(error)
 }
 
 // New creates WorkerPool with 0 worker.
-func New[T any](
-	exec WorkExecuter[T],
-	options ...Option[T],
-) *Pool[T] {
-	w := &Pool[T]{
+func New[K comparable, T any](
+	exec WorkExecuter[K, T],
+	idPool IdPool[K],
+	options ...Option[K, T],
+) *Pool[K, T] {
+	w := &Pool[K, T]{
 		taskCh:           make(chan T),
-		workers:          orderedmap.New[string, *worker[T]](),
-		sleepingWorkers:  make(map[string]*worker[T]),
+		workers:          orderedmap.New[K, *worker[K, T]](),
+		sleepingWorkers:  make(map[K]*worker[K, T]),
 		onAbnormalReturn: func(err error) {},
 		workerCond:       sync.NewCond(&sync.Mutex{}),
 	}
@@ -76,10 +76,10 @@ func New[T any](
 		w.workerCond.Broadcast()
 		w.workerCond.L.Unlock()
 	}
-	w.constructor = workerConstructor[T]{
-		IdGenerator: uuid.NewString,
-		Exec:        exec,
-		TaskCh:      w.taskCh,
+	w.constructor = workerConstructor[K, T]{
+		IdPool: idPool,
+		Exec:   exec,
+		TaskCh: w.taskCh,
 		recordReceive: func(T) {
 			add(1)
 		},
@@ -97,11 +97,11 @@ func New[T any](
 
 // Sender is getter of a sender side of the task channel,
 // where you can send tasks to workers.
-func (p *Pool[T]) Sender() chan<- T {
+func (p *Pool[K, T]) Sender() chan<- T {
 	return p.taskCh
 }
 
-func (p *Pool[T]) WaitUntil(condition func(alive, sleeping, active int) bool, action ...func()) {
+func (p *Pool[K, T]) WaitUntil(condition func(alive, sleeping, active int) bool, action ...func()) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 
@@ -116,9 +116,9 @@ func (p *Pool[T]) WaitUntil(condition func(alive, sleeping, active int) bool, ac
 // Add adds delta number of workers to p.
 // This will create new delta number of goroutines.
 // delta is limited to be positive and non zero number, otherwise is no-op.
-func (p *Pool[T]) Add(delta int) {
+func (p *Pool[K, T]) Add(delta int) (ok bool) {
 	if delta <= 0 {
-		return
+		return false
 	}
 
 	p.workerCond.L.Lock()
@@ -126,12 +126,15 @@ func (p *Pool[T]) Add(delta int) {
 
 	for i := 0; i < delta; i++ {
 		worker := p.constructor.Build()
-		p.wg.Add(1)
+		if worker == nil {
+			return false
+		}
 
 		runCtx, cancel := context.WithCancel(context.Background())
 		worker.SetCancelFn(cancel)
 		p.workers.Set(worker.id, worker)
 
+		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
 			defer cancel()
@@ -140,6 +143,7 @@ func (p *Pool[T]) Add(delta int) {
 
 	}
 	p.workerCond.Broadcast()
+	return true
 }
 
 var (
@@ -156,9 +160,9 @@ func (p *panicErr) Error() string {
 	return fmt.Sprintf("%v\n\n%s", p.err, p.stack)
 }
 
-func (p *Pool[T]) runWorker(
+func (p *Pool[K, T]) runWorker(
 	ctx context.Context,
-	worker *worker[T],
+	worker *worker[K, T],
 	shouldRecover bool,
 	abnormalReturnCb func(error),
 ) (workerErr error) {
@@ -178,6 +182,7 @@ func (p *Pool[T]) runWorker(
 		p.workerCond.L.Lock()
 		p.workers.Delete(worker.id)
 		delete(p.sleepingWorkers, worker.id)
+		p.constructor.IdPool.Put(worker.id)
 		p.workerCond.Broadcast()
 		p.workerCond.L.Unlock()
 
@@ -196,7 +201,7 @@ func (p *Pool[T]) runWorker(
 			}
 		}()
 
-		_, workerErr = worker.Run(ctx)
+		_, workerErr = worker.Run(ctx, worker.id)
 		normalReturn = true
 	}()
 	if !normalReturn {
@@ -208,7 +213,7 @@ func (p *Pool[T]) runWorker(
 // Remove removes delta number of workers from p.
 // Removed workers would be held as sleeping if they were still working on a task.
 // delta is limited to be positive and non zero number, otherwise is no-op.
-func (p *Pool[T]) Remove(delta int) {
+func (p *Pool[K, T]) Remove(delta int) {
 	if delta <= 0 {
 		return
 	}
@@ -217,7 +222,7 @@ func (p *Pool[T]) Remove(delta int) {
 	defer p.workerCond.L.Unlock()
 
 	oldDelta := delta
-	cancelWorker := func(predicate func(w *worker[T]) bool) {
+	cancelWorker := func(predicate func(w *worker[K, T]) bool) {
 		old := p.workers.Oldest()
 		next := old
 		for next != nil {
@@ -235,8 +240,8 @@ func (p *Pool[T]) Remove(delta int) {
 		}
 	}
 
-	cancelWorker(func(w *worker[T]) bool { return !w.State().IsActive() })
-	cancelWorker(func(w *worker[T]) bool { return true })
+	cancelWorker(func(w *worker[K, T]) bool { return !w.State().IsActive() })
+	cancelWorker(func(w *worker[K, T]) bool { return true })
 
 	if delta != oldDelta {
 		p.workerCond.Broadcast()
@@ -245,18 +250,18 @@ func (p *Pool[T]) Remove(delta int) {
 
 // Len returns number of workers.
 // alive is running workers. sleeping is workers removed by Remove but still working on its task.
-func (p *Pool[T]) Len() (alive, sleeping, active int) {
+func (p *Pool[K, T]) Len() (alive, sleeping, active int) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 	return p.len()
 }
 
-func (p *Pool[T]) len() (alive, sleeping, active int) {
+func (p *Pool[K, T]) len() (alive, sleeping, active int) {
 	return p.workers.Len(), len(p.sleepingWorkers), p.activeWorkerNum
 }
 
 // Kill kills all workers.
-func (p *Pool[T]) Kill() {
+func (p *Pool[K, T]) Kill() {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 
@@ -268,7 +273,7 @@ func (p *Pool[T]) Kill() {
 	}
 }
 
-func (p *Pool[T]) Pause(
+func (p *Pool[K, T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorkers func() (cancelled bool), err error) {
@@ -279,7 +284,7 @@ func (p *Pool[T]) Pause(
 	continueFns := make([]func() (cancelled bool), 0, p.workers.Len())
 	for pair := p.workers.Oldest(); pair != nil; pair = pair.Next() {
 		wg.Add(1)
-		go func(worker *worker[T]) {
+		go func(worker *worker[K, T]) {
 			defer wg.Done()
 			cont, err := worker.Pause(ctx, timeout)
 			if err == nil {
@@ -316,6 +321,6 @@ func (p *Pool[T]) Pause(
 
 // Wait waits for all workers to stop.
 // Calling this without Kill and/or Remove all workers may block forever.
-func (p *Pool[T]) Wait() {
+func (p *Pool[K, T]) Wait() {
 	p.wg.Wait()
 }

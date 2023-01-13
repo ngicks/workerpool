@@ -2,9 +2,9 @@ package workerpool
 
 // workerConstructor is a aggregated parameters
 // which are related to worker construction.
-type workerConstructor[T any] struct {
-	IdGenerator   func() string
-	Exec          WorkExecuter[T]
+type workerConstructor[K comparable, T any] struct {
+	IdPool        IdPool[K]
+	Exec          WorkExecuter[K, T]
 	OnReceive     func(p T)
 	OnDone        func(p T, err error)
 	TaskCh        chan T
@@ -12,14 +12,18 @@ type workerConstructor[T any] struct {
 	recordDone    func(p T, err error)
 }
 
-func (p *workerConstructor[T]) Build() *worker[T] {
-	return &worker[T]{
-		id:     p.IdGenerator(),
+func (p *workerConstructor[K, T]) Build() *worker[K, T] {
+	id, ok := p.IdPool.Get()
+	if !ok {
+		return nil
+	}
+	return &worker[K, T]{
+		id:     id,
 		Worker: p.build(),
 	}
 }
 
-func (p *workerConstructor[T]) build() *Worker[T] {
+func (p *workerConstructor[K, T]) build() *Worker[K, T] {
 	combinedOnTaskReceived := func(param T) {
 		if p.OnReceive != nil {
 			p.OnReceive(param)

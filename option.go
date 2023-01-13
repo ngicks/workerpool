@@ -7,13 +7,13 @@ import (
 
 // Option is an option that changes Pool instance.
 // This can be used in New.
-type Option[T any] func(p *Pool[T])
+type Option[K comparable, T any] func(p *Pool[K, T])
 
-func SetTaskChannel[T any](taskCh chan T) Option[T] {
+func SetTaskChannel[K comparable, T any](taskCh chan T) Option[K, T] {
 	if taskCh == nil {
 		panic("ch is nil")
 	}
-	return func(w *Pool[T]) {
+	return func(w *Pool[K, T]) {
 		w.taskCh = taskCh
 		w.constructor.TaskCh = taskCh
 	}
@@ -23,26 +23,26 @@ func SetTaskChannel[T any](taskCh chan T) Option[T] {
 //
 // cb is called if and only if WorkFn is returned abnormally.
 // cb may be called multiple times, simultaneously.
-func SetAbnormalReturnCb[T any](cb func(err error)) Option[T] {
+func SetAbnormalReturnCb[K comparable, T any](cb func(err error)) Option[K, T] {
 	if cb == nil {
 		panic("cb is nil")
 	}
-	return func(p *Pool[T]) {
+	return func(p *Pool[K, T]) {
 		p.onAbnormalReturn = cb
 	}
 }
 
 // SetLogOnAbnormalReturn is an Option that
 // replaces abnormal-return cb with one that simply calls log.Println with the error.
-func SetLogOnAbnormalReturn[T any]() Option[T] {
-	return func(p *Pool[T]) {
+func SetLogOnAbnormalReturn[K comparable, T any]() Option[K, T] {
+	return func(p *Pool[K, T]) {
 		p.onAbnormalReturn = func(err error) { log.Println(err) }
 	}
 }
 
 // SetHook is an Option that sets onTaskReceive and onTaskDone hooks.
-func SetHook[T any](onTaskReceive func(T), onTaskDone func(T, error)) Option[T] {
-	return func(p *Pool[T]) {
+func SetHook[K comparable, T any](onTaskReceive func(T), onTaskDone func(T, error)) Option[K, T] {
+	return func(p *Pool[K, T]) {
 		p.constructor.OnReceive = onTaskReceive
 		p.constructor.OnDone = onTaskDone
 	}
@@ -51,29 +51,29 @@ func SetHook[T any](onTaskReceive func(T), onTaskDone func(T, error)) Option[T] 
 // DisableActiveWorkerNumRecord is an Option that disables
 // p's default active-worker-record behavior.
 // If this option is passed to New, p's Len always reports 0 active worker.
-func DisableActiveWorkerNumRecord[T any]() Option[T] {
-	return func(p *Pool[T]) {
+func DisableActiveWorkerNumRecord[K comparable, T any]() Option[K, T] {
+	return func(p *Pool[K, T]) {
 		p.constructor.recordReceive = nil
 		p.constructor.recordDone = nil
 	}
 }
 
-type ManagerOption[T any] func(wp *Manager[T])
+type ManagerOption[K comparable, T any] func(wp *Manager[K, T])
 
-func SetRemovalBatchSize[T any](size int) ManagerOption[T] {
-	return func(wp *Manager[T]) {
+func SetRemovalBatchSize[K comparable, T any](size int) ManagerOption[K, T] {
+	return func(wp *Manager[K, T]) {
 		wp.removalBatchSize = size
 	}
 }
 
-func SetMaxWaiting[T any](maxWaiting int) ManagerOption[T] {
-	return func(wp *Manager[T]) {
+func SetMaxWaiting[K comparable, T any](maxWaiting int) ManagerOption[K, T] {
+	return func(wp *Manager[K, T]) {
 		wp.maxWaiting = maxWaiting
 	}
 }
 
-func SetRemovalInterval[T any](interval time.Duration) ManagerOption[T] {
-	return func(wp *Manager[T]) {
+func SetRemovalInterval[K comparable, T any](interval time.Duration) ManagerOption[K, T] {
+	return func(wp *Manager[K, T]) {
 		wp.removalInterval = interval
 	}
 }

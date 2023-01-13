@@ -49,7 +49,7 @@ pool.WaitUntil(func(alive, sleeping, active int) bool {
 	return alive == 16 && active == 0
 })
 
-// You can use the Manager[T] as well.
+// You can use the Manager[K, T] as well.
 // This gradually increases pool's workers to max worker,
 // or decreases when manager is idle.
 manager := workerpool.NewManager(

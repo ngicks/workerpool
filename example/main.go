@@ -12,14 +12,14 @@ import (
 )
 
 func main() {
-	exec := workerpool.WorkFn[int](
-		func(ctx context.Context, num int) error {
+	exec := workerpool.WorkFn[string, int](
+		func(ctx context.Context, id string, num int) error {
 			time.Sleep((time.Duration(rand.Int31n(1000)) + 1000) * time.Millisecond)
 			fmt.Printf("%d,", num)
 			return nil
 		},
 	)
-	pool := workerpool.New[int](exec)
+	pool := workerpool.New[string, int](exec, workerpool.NewUuidPool())
 
 	fmt.Println("Adding 1 goroutine; for sending tasks.")
 	done := make(chan struct{})

@@ -66,7 +66,10 @@ func TestPool(t *testing.T) {
 
 	recorderHook := newRecorderHook()
 
-	pool := New[idParam](w, SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone))
+	pool := New[string, idParam](
+		w, NewUuidPool(),
+		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
+	)
 
 	assertWorkerNum := createAssertWorkerNum(t, pool)
 	assertActiveWorker := createAssertActiveWorker(t, pool)
@@ -212,9 +215,9 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	var errorStack slice.Deque[error]
 	var errorStackMu sync.Mutex
 	cbCalled := make(chan struct{}, 1)
-	pool := New[idParam](
-		w,
-		SetAbnormalReturnCb[idParam](func(err error) {
+	pool := New[string, idParam](
+		w, NewUuidPool(),
+		SetAbnormalReturnCb[string, idParam](func(err error) {
 			errorStackMu.Lock()
 			errorStack.PushBack(err)
 			errorStackMu.Unlock()
@@ -298,7 +301,7 @@ type stackWorkExec struct {
 
 	stepper chan struct{} // stepper is received when Exec is called, calling step() or send on stepper will step an Exec call to return.
 
-	stack slice.Stack[func() error]
+	stack slice.Stack[func(ctx context.Context, id string, param idParam) error]
 }
 
 func newStackWorkExec() *stackWorkExec {
@@ -311,7 +314,7 @@ func (e *stackWorkExec) step() {
 	e.stepper <- struct{}{}
 }
 
-func (e *stackWorkExec) Exec(ctx context.Context, param idParam) error {
+func (e *stackWorkExec) Exec(ctx context.Context, id string, param idParam) error {
 	<-e.stepper
 
 	e.Lock()
@@ -319,7 +322,7 @@ func (e *stackWorkExec) Exec(ctx context.Context, param idParam) error {
 	e.Unlock()
 
 	if fn != nil {
-		return fn()
+		return fn(ctx, id, param)
 	}
 	return nil
 }
@@ -329,11 +332,14 @@ func TestPool_Pause(t *testing.T) {
 
 	workExec := newStackWorkExec()
 
-	workExec.stack.Push(func() error { panic("foo") })
-	workExec.stack.Push(func() error { runtime.Goexit(); return nil })
-	workExec.stack.Push(func() error { return nil })
+	workExec.stack.Push(func(context.Context, string, idParam) error { panic("foo") })
+	workExec.stack.Push(func(context.Context, string, idParam) error {
+		runtime.Goexit()
+		return nil
+	})
+	workExec.stack.Push(func(context.Context, string, idParam) error { return nil })
 
-	pool := New[idParam](workExec)
+	pool := New[string, idParam](workExec, NewUuidPool())
 
 	pool.Add(10)
 
@@ -429,9 +435,9 @@ func TestPool_Pause_timeout(t *testing.T) {
 	recorderHook := &recorderHook{}
 	recorderHook.init()
 
-	pool := New[idParam](
-		workExec,
-		SetHook(recorderHook.onTaskReceived, recorderHook.onTaskDone),
+	pool := New[string, idParam](
+		workExec, NewUuidPool(),
+		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
 	pool.Add(10)
@@ -493,7 +499,7 @@ func TestPool_Pause_cancelling_context(t *testing.T) {
 
 	workExec := newStackWorkExec()
 
-	pool := New[idParam](workExec)
+	pool := New[string, idParam](workExec, NewUuidPool())
 
 	pool.Add(10)
 
@@ -550,4 +556,84 @@ func TestPool_Pause_cancelling_context(t *testing.T) {
 		assert.False(pair.Value.State().IsPaused())
 	}
 	pool.workerCond.L.Unlock()
+}
+
+func TestPool_worker_is_aware_of_id(t *testing.T) {
+	assert := assert.New(t)
+
+	workExec := newStackWorkExec()
+
+	var mu sync.Mutex
+	ids := make([]string, 0)
+	fn := func(ctx context.Context, id string, param idParam) error {
+		mu.Lock()
+		defer mu.Unlock()
+		ids = append(ids, id)
+		return nil
+	}
+	for i := 0; i < 5; i++ {
+		workExec.stack.Push(fn)
+	}
+
+	pool := New[string, idParam](
+		workExec,
+		NewFixedIdPool([]string{"1", "2", "3", "4", "5"}),
+	)
+
+	defer pool.Wait()
+	defer pool.Remove(15)
+
+	for i := 0; i < 5; i++ {
+		assert.True(pool.Add(1))
+	}
+	for i := 0; i < 10; i++ {
+		assert.False(pool.Add(1))
+	}
+
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return alive == 5
+	})
+
+	for i := 0; i < 5; i++ {
+		pool.Sender() <- idParam{}
+		workExec.step()
+	}
+
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return active == 0
+	})
+
+	mu.Lock()
+	for _, v := range ids {
+		assert.True(slice.Has([]string{"1", "2", "3", "4", "5"}, v))
+	}
+	mu.Unlock()
+
+	pool.Sender() <- idParam{}
+
+	// non-active workers take precedence.
+	pool.Remove(4)
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return sleeping == 0
+	})
+
+	assert.True(pool.Add(4))
+
+	workExec.Lock()
+	workExec.stack.Push(fn)
+	workExec.Unlock()
+
+	workExec.step()
+
+	pool.WaitUntil(func(alive, sleeping, active int) bool {
+		return active == 0
+	})
+
+	mu.Lock()
+	assert.True(
+		slice.Has([]string{"1", "2", "3", "4", "5"}, ids[len(ids)-1]),
+		"id must be reused",
+	)
+
+	mu.Unlock()
 }

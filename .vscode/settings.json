@@ -7,7 +7,9 @@
     "ngicks",
     "orderedmap",
     "Println",
+    "randstr",
     "stretchr",
+    "syncparam",
     "workerpool"
   ]
 }

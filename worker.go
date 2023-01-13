@@ -85,35 +85,35 @@ var timerFactory = func() common.Timer {
 }
 
 // WorkExecuter is an executor of tasks.
-type WorkExecuter[T any] interface {
+type WorkExecuter[K comparable, T any] interface {
 	// Exec executes a task.
 	// ctx is cancelled if and only if the executor is needed to stop immediately.
 	// A long running task must respect the ctx.
-	Exec(ctx context.Context, param T) error
+	Exec(ctx context.Context, id K, param T) error
 }
 
 // WorkFn wraps a function so that it can be used as WorkExecutor.
-type WorkFn[T any] func(ctx context.Context, param T) error
+type WorkFn[K comparable, T any] func(ctx context.Context, id K, param T) error
 
-func (w WorkFn[T]) Exec(ctx context.Context, param T) error {
-	return w(ctx, param)
+func (w WorkFn[K, T]) Exec(ctx context.Context, id K, param T) error {
+	return w(ctx, id, param)
 }
 
-var _ WorkExecuter[int] = WorkFn[int](nil)
+var _ WorkExecuter[string, int] = WorkFn[string, int](nil)
 
 // Worker represents a single task executor,
 // It works on a single task, which is sent though task channel, at a time.
 // It may be in stopped-state where loop is stopped,
 // running-state where it is working in loop,
 // or ended-state where no way is given to step back into working-state again.
-type Worker[T any] struct {
+type Worker[K comparable, T any] struct {
 	stateCond *sync.Cond
 	state     WorkerState
 
 	killCh  chan struct{}
 	pauseCh chan func()
 
-	fn             WorkExecuter[T]
+	fn             WorkExecuter[K, T]
 	taskCh         <-chan T
 	onTaskReceived func(param T)
 	onTaskDone     func(param T, err error)
@@ -124,12 +124,12 @@ type Worker[T any] struct {
 
 // NewWorker returns initialized Worker.
 // Both or either of onTaskReceived and onTaskDone can be nil.
-func NewWorker[T any](
-	fn WorkExecuter[T],
+func NewWorker[K comparable, T any](
+	fn WorkExecuter[K, T],
 	taskCh <-chan T,
 	onTaskReceived func(param T),
 	onTaskDone func(param T, err error),
-) *Worker[T] {
+) *Worker[K, T] {
 	if onTaskReceived == nil {
 		onTaskReceived = func(T) {}
 	}
@@ -137,7 +137,7 @@ func NewWorker[T any](
 		onTaskDone = func(T, error) {}
 	}
 
-	return &Worker[T]{
+	return &Worker[K, T]{
 		stateCond:      sync.NewCond(&sync.Mutex{}),
 		killCh:         make(chan struct{}),
 		pauseCh:        make(chan func()),
@@ -159,7 +159,7 @@ func NewWorker[T any](
 // The ended state can be reached if (1) Kill is called,
 // (2) WorkExecutor returned abnormally (panic or runtime.Goexit),
 // or (3) taskCh is closed.
-func (w *Worker[T]) Run(ctx context.Context) (killed bool, err error) {
+func (w *Worker[K, T]) Run(ctx context.Context, id K) (killed bool, err error) {
 	if w.State().IsEnded() {
 		return false, ErrAlreadyEnded
 	}
@@ -239,7 +239,7 @@ loop:
 						}
 						w.onTaskDone(param, err)
 					}()
-					err = w.fn.Exec(ctx, param)
+					err = w.fn.Exec(ctx, id, param)
 					normalReturnInner = true
 				}()
 			}
@@ -257,7 +257,7 @@ loop:
 //
 // Internally timer is created and set with timeout when w is paused.
 // Thus timeout (nearly) equals to the maximum duration of the pause.
-func (w *Worker[T]) Pause(
+func (w *Worker[K, T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
 ) (continueWorker func() (cancelled bool), err error) {
@@ -336,7 +336,7 @@ func (w *Worker[T]) Pause(
 // If a task is being worked at the time of invocation,
 // the context passed to the WorkExecutor will be cancelled immediately.
 // Kill makes this worker to step into ended state, making it impossible to started again.
-func (w *Worker[T]) Kill() {
+func (w *Worker[K, T]) Kill() {
 	if w.setEnded() {
 		close(w.killCh)
 	} else {
@@ -348,7 +348,7 @@ func (w *Worker[T]) Kill() {
 	}
 }
 
-func (w *Worker[T]) setEnded() bool {
+func (w *Worker[K, T]) setEnded() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
@@ -363,7 +363,7 @@ func (w *Worker[T]) setEnded() bool {
 // WaitUntil waits until condition returns true. actions will be called within lock.
 // If w reaches ended state and the condition is not waiting for w to end, WaitUntil returns false without calling actions,
 // returns true otherwise.
-func (w *Worker[T]) WaitUntil(condition func(state WorkerState) bool, actions ...func()) (ok bool) {
+func (w *Worker[K, T]) WaitUntil(condition func(state WorkerState) bool, actions ...func()) (ok bool) {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
@@ -381,14 +381,14 @@ func (w *Worker[T]) WaitUntil(condition func(state WorkerState) bool, actions ..
 	return true
 }
 
-func (w *Worker[T]) State() WorkerState {
+func (w *Worker[K, T]) State() WorkerState {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
 	return w.state
 }
 
-func (w *Worker[T]) start() bool {
+func (w *Worker[K, T]) start() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
@@ -400,7 +400,7 @@ func (w *Worker[T]) start() bool {
 	return false
 }
 
-func (w *Worker[T]) stop() bool {
+func (w *Worker[K, T]) stop() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
@@ -412,14 +412,14 @@ func (w *Worker[T]) stop() bool {
 	return false
 }
 
-func (w *Worker[T]) pause() {
+func (w *Worker[K, T]) pause() {
 	w.stateCond.L.Lock()
 	w.state = w.state.set(Paused)
 	w.stateCond.Broadcast()
 	w.stateCond.L.Unlock()
 }
 
-func (w *Worker[T]) unpause() {
+func (w *Worker[K, T]) unpause() {
 	w.stateCond.L.Lock()
 	w.state = w.state.set(Running)
 	w.stateCond.Broadcast()
