@@ -2,6 +2,7 @@ package workerpool
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -337,8 +338,9 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 		_,
 		closedOnRunReturn := runWorker(worker, "foo")
 
-	workExec.onCalledHook = func() {
+	workExec.onCalledHook = func() error {
 		runtime.Goexit()
+		return nil
 	}
 
 	taskCh <- idParam{}
@@ -627,4 +629,45 @@ func TestWorker_start_while_pause(t *testing.T) {
 	}
 
 	cont()
+}
+
+func TestWorker_executor_returns_ErrWorkerFatal(t *testing.T) {
+	assert := assert.New(t)
+
+	worker,
+		taskCh,
+		workExec,
+		_,
+		runWorker := setupWorker()
+
+	_,
+		cancelRun,
+		runRetValue,
+		closedOnRunReturn := runWorker(worker, "foo")
+	defer func() {
+		<-closedOnRunReturn
+	}()
+	defer cancelRun()
+
+	workExec.onCalledHook = func() error {
+		return fmt.Errorf("%w: foo", ErrWorkerFatal)
+	}
+
+	taskCh <- idParam{}
+	workExec.step()
+	cancelRun()
+	<-closedOnRunReturn
+
+	killed, recovered, err := runRetValue()
+
+	assert.False(killed)
+	assert.Nil(recovered)
+	assert.ErrorIs(err, ErrWorkerFatal, "%v", err)
+
+	state := worker.State()
+	assert.False(state.IsActive())
+	assert.False(state.IsEnded())
+	assert.False(state.IsPaused())
+	assert.False(state.IsRunning())
+	assert.False(state.IsStarted())
 }

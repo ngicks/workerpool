@@ -257,9 +257,10 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 
 	w.MustPanicWith(nil)
 	var called atomic.Bool
-	w.onCalledHook = func() {
+	w.onCalledHook = func() error {
 		called.Store(true)
 		runtime.Goexit()
+		return nil
 	}
 
 	switchCh = make(chan struct{})

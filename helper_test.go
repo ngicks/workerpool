@@ -39,7 +39,7 @@ type workFn struct {
 	stepper chan struct{} // stepper is received when Exec is called, calling step() or send on stepper will step an Exec call to return.
 
 	panicLabel   any
-	onCalledHook func()
+	onCalledHook func() error
 }
 
 func newWorkFn() *workFn {
@@ -82,11 +82,12 @@ func (w *workFn) Exec(ctx context.Context, id string, param idParam) error {
 	default:
 	}
 
+	var err error
 	if w.panicLabel != nil {
 		panic(w.panicLabel)
 	}
 	if w.onCalledHook != nil {
-		w.onCalledHook()
+		err = w.onCalledHook()
 	}
 	// log.Println("blocking on stepper")
 	<-w.stepper
@@ -99,6 +100,9 @@ func (w *workFn) Exec(ctx context.Context, id string, param idParam) error {
 	})
 	w.Unlock()
 
+	if err != nil {
+		return err
+	}
 	return ErrInt(param.Id)
 }
 

@@ -2,11 +2,19 @@ package workerpool
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngicks/gommon/pkg/common"
+)
+
+var (
+	// ErrWorkerFatal means worker is in fatal state.
+	// WorkExecuter may returns the error to stop the worker,
+	// as it has been in fatal state.
+	ErrWorkerFatal = errors.New("worker fatal")
 )
 
 type WorkerState int32
@@ -217,6 +225,9 @@ func (w *Worker[K, T]) Run(ctx context.Context, id K) (killed bool, err error) {
 
 loop:
 	for {
+		// zero-ing
+		err = nil
+
 		select {
 		case <-w.killCh:
 			break loop
@@ -257,7 +268,6 @@ loop:
 					}
 
 					normalReturnInner := false
-					var err error
 					w.onTaskReceived(id, param)
 					defer func() {
 						if !normalReturnInner {
@@ -268,6 +278,9 @@ loop:
 					err = w.fn.Exec(ctx, id, param)
 					normalReturnInner = true
 				}()
+				if errors.Is(err, ErrWorkerFatal) {
+					break loop
+				}
 			}
 		}
 	}
