@@ -239,16 +239,8 @@ loop:
 					break loop
 				}
 				func() {
-					w.stateCond.L.Lock()
-					w.state = w.state.setActive()
-					w.stateCond.Broadcast()
-					w.stateCond.L.Unlock()
-					defer func() {
-						w.stateCond.L.Lock()
-						w.state = w.state.unsetActive()
-						w.stateCond.Broadcast()
-						w.stateCond.L.Unlock()
-					}()
+					w.setActive(true)
+					defer w.setActive(false)
 
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
@@ -444,6 +436,17 @@ func (w *Worker[K, T]) stop() bool {
 		return true
 	}
 	return false
+}
+
+func (w *Worker[K, T]) setActive(active bool) {
+	w.stateCond.L.Lock()
+	if active {
+		w.state = w.state.setActive()
+	} else {
+		w.state = w.state.unsetActive()
+	}
+	w.stateCond.Broadcast()
+	w.stateCond.L.Unlock()
 }
 
 func (w *Worker[K, T]) pause() {

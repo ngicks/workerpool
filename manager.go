@@ -115,7 +115,7 @@ func (m *Manager[K, T]) Sender() chan<- T {
 	return m.taskCh
 }
 
-func (m *Manager[K, T]) WaitWorker(condition func(alive, sleeping, active int) bool, action ...func()) {
+func (m *Manager[K, T]) WaitUntil(condition func(alive, sleeping, active int) bool, action ...func()) {
 	m.pool.WaitUntil(condition, action...)
 }
 

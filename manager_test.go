@@ -54,7 +54,7 @@ func TestManager(t *testing.T) {
 		return timing.CreateWaiterFn(func() { <-fakeTimer.ResetCh })
 	}
 	waitWorkerNum := func(alive, sleeping int) {
-		manager.WaitWorker(func(alive_, sleeping_, active_ int) bool {
+		manager.WaitUntil(func(alive_, sleeping_, active_ int) bool {
 			return alive == alive_ && sleeping == sleeping_
 		})
 	}
