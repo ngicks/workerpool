@@ -68,7 +68,7 @@ func TestPool(t *testing.T) {
 
 	pool := New[string, idParam](
 		w, NewUuidPool(),
-		SetHook[string](nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		SetHook(nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
 	assertWorkerNum := createAssertWorkerNum(t, pool)
@@ -438,7 +438,7 @@ func TestPool_Pause_timeout(t *testing.T) {
 
 	pool := New[string, idParam](
 		workExec, NewUuidPool(),
-		SetHook[string](nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		SetHook(nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
 	pool.Add(10)
