@@ -43,6 +43,13 @@ func SetLogOnAbnormalReturn[K comparable, T any]() Option[K, T] {
 
 // SetHook is an Option that sets onWorkerStart, onTaskReceive and onTaskDone hooks.
 // Each function can be nil.
+//
+// onWorkerStart will be called once a worker starts.
+// It also can be called with same worker id's multiple times
+// if workers are Added after Removed and the id pool reuses id's.
+// ctx is cancelled when Run returns.
+//
+// onTaskReceive and onTaskDone will be called each time the worker receive and done received task.
 func SetHook[K comparable, T any](
 	onWorkerStart func(ctx context.Context, id K),
 	onTaskReceive func(K, T),
