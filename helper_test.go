@@ -26,6 +26,7 @@ func (e ErrInt) Error() string {
 }
 
 type workFnArg struct {
+	WorkerId         string
 	Param            idParam
 	ContextCancelled bool
 }
@@ -101,17 +102,25 @@ func (w *workFn) Exec(ctx context.Context, id string, param idParam) error {
 	return ErrInt(param.Id)
 }
 
-type doneArg struct {
+type hookArg struct {
+	Id    string
 	Param idParam
 	Err   error
+}
+
+type onStartArg struct {
+	Ctx context.Context
+	Id  string
 }
 
 type recorderHook struct {
 	sync.Mutex
 	onReceive    chan struct{}
 	onDone       chan struct{}
-	receivedArgs []idParam
-	doneArgs     []doneArg
+	receivedArgs []hookArg
+	doneArgs     []hookArg
+
+	onStartArg onStartArg
 }
 
 func newRecorderHook() *recorderHook {
@@ -125,9 +134,15 @@ func (r *recorderHook) init() {
 	r.onDone = make(chan struct{}, 1)
 }
 
-func (r *recorderHook) onTaskReceived(param idParam) {
+func (r *recorderHook) onStart(ctx context.Context, id string) {
 	r.Lock()
-	r.receivedArgs = append(r.receivedArgs, param)
+	r.onStartArg = onStartArg{Ctx: ctx, Id: id}
+	r.Unlock()
+}
+
+func (r *recorderHook) onTaskReceived(id string, param idParam) {
+	r.Lock()
+	r.receivedArgs = append(r.receivedArgs, hookArg{Id: id, Param: param})
 	r.Unlock()
 
 	select {
@@ -136,10 +151,11 @@ func (r *recorderHook) onTaskReceived(param idParam) {
 	}
 }
 
-func (r *recorderHook) onTaskDone(param idParam, err error) {
+func (r *recorderHook) onTaskDone(id string, param idParam, err error) {
 	r.Lock()
 	r.doneArgs = append(r.doneArgs,
-		doneArg{
+		hookArg{
+			Id:    id,
 			Param: param,
 			Err:   err,
 		},

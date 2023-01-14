@@ -1,6 +1,7 @@
 package workerpool
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -40,9 +41,15 @@ func SetLogOnAbnormalReturn[K comparable, T any]() Option[K, T] {
 	}
 }
 
-// SetHook is an Option that sets onTaskReceive and onTaskDone hooks.
-func SetHook[K comparable, T any](onTaskReceive func(T), onTaskDone func(T, error)) Option[K, T] {
+// SetHook is an Option that sets onWorkerStart, onTaskReceive and onTaskDone hooks.
+// Each function can be nil.
+func SetHook[K comparable, T any](
+	onWorkerStart func(ctx context.Context, id K),
+	onTaskReceive func(K, T),
+	onTaskDone func(K, T, error),
+) Option[K, T] {
 	return func(p *Pool[K, T]) {
+		p.constructor.OnStart = onWorkerStart
 		p.constructor.OnReceive = onTaskReceive
 		p.constructor.OnDone = onTaskDone
 	}

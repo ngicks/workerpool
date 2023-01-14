@@ -101,6 +101,30 @@ func (w WorkFn[K, T]) Exec(ctx context.Context, id K, param T) error {
 
 var _ WorkExecuter[string, int] = WorkFn[string, int](nil)
 
+type workerOption[K comparable, T any] func(w *Worker[K, T])
+
+func SetOnTaskReceived[K comparable, T any](onTaskReceived func(K, T)) workerOption[K, T] {
+	return func(w *Worker[K, T]) {
+		if onTaskReceived != nil {
+			w.onTaskReceived = onTaskReceived
+		}
+	}
+}
+
+func SetOnTaskDone[K comparable, T any](onTaskDone func(K, T, error)) workerOption[K, T] {
+	return func(w *Worker[K, T]) {
+		if onTaskDone != nil {
+			w.onTaskDone = onTaskDone
+		}
+	}
+}
+
+func SetOnStart[K comparable, T any](onStart func(context.Context, K)) workerOption[K, T] {
+	return func(w *Worker[K, T]) {
+		w.onStart = onStart
+	}
+}
+
 // Worker represents a single task executor,
 // It works on a single task, which is sent though task channel, at a time.
 // It may be in stopped-state where loop is stopped,
@@ -115,8 +139,9 @@ type Worker[K comparable, T any] struct {
 
 	fn             WorkExecuter[K, T]
 	taskCh         <-chan T
-	onTaskReceived func(param T)
-	onTaskDone     func(param T, err error)
+	onStart        func(ctx context.Context, id K)
+	onTaskReceived func(id K, param T)
+	onTaskDone     func(id K, param T, err error)
 	cancelFn       atomic.Pointer[context.CancelFunc]
 
 	timerFactory func() common.Timer
@@ -127,26 +152,24 @@ type Worker[K comparable, T any] struct {
 func NewWorker[K comparable, T any](
 	fn WorkExecuter[K, T],
 	taskCh <-chan T,
-	onTaskReceived func(param T),
-	onTaskDone func(param T, err error),
+	options ...workerOption[K, T],
 ) *Worker[K, T] {
-	if onTaskReceived == nil {
-		onTaskReceived = func(T) {}
-	}
-	if onTaskDone == nil {
-		onTaskDone = func(T, error) {}
-	}
-
-	return &Worker[K, T]{
+	w := &Worker[K, T]{
 		stateCond:      sync.NewCond(&sync.Mutex{}),
 		killCh:         make(chan struct{}),
 		pauseCh:        make(chan func()),
 		fn:             fn,
 		taskCh:         taskCh,
-		onTaskReceived: onTaskReceived,
-		onTaskDone:     onTaskDone,
+		onTaskReceived: func(id K, param T) {},
+		onTaskDone:     func(id K, param T, err error) {},
 		timerFactory:   timerFactory,
 	}
+
+	for _, opt := range options {
+		opt(w)
+	}
+
+	return w
 }
 
 // Run starts w's worker loop. It blocks until ctx is cancelled and/or Kill is called
@@ -167,6 +190,12 @@ func (w *Worker[K, T]) Run(ctx context.Context, id K) (killed bool, err error) {
 		return false, ErrAlreadyRunning
 	}
 	defer w.stop()
+
+	if w.onStart != nil {
+		startCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		w.onStart(startCtx, id)
+	}
 
 	var normalReturn bool
 	defer func() {
@@ -232,12 +261,12 @@ loop:
 
 					normalReturnInner := false
 					var err error
-					w.onTaskReceived(param)
+					w.onTaskReceived(id, param)
 					defer func() {
 						if !normalReturnInner {
 							err = ErrAbnormalReturn
 						}
-						w.onTaskDone(param, err)
+						w.onTaskDone(id, param, err)
 					}()
 					err = w.fn.Exec(ctx, id, param)
 					normalReturnInner = true

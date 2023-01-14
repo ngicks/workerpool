@@ -20,7 +20,7 @@ func setupWorker() (
 	taskCh chan idParam,
 	workExec *workFn,
 	recorder *recorderHook,
-	runWorker func(worker *Worker[string, idParam]) (
+	runWorker func(worker *Worker[string, idParam], workerId string) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
@@ -35,11 +35,12 @@ func setupWorker() (
 	worker = NewWorker[string, idParam](
 		workExec,
 		taskCh,
-		recorder.onTaskReceived,
-		recorder.onTaskDone,
+		SetOnStart[string, idParam](recorder.onStart),
+		SetOnTaskReceived(recorder.onTaskReceived),
+		SetOnTaskDone(recorder.onTaskDone),
 	)
 
-	runWorker = func(worker *Worker[string, idParam]) (
+	runWorker = func(worker *Worker[string, idParam], workerId string) (
 		runCtx context.Context,
 		cancelRun context.CancelFunc,
 		runRetValue func() (killed bool, recovered any, err error),
@@ -61,7 +62,7 @@ func setupWorker() (
 			}()
 			defer cancel()
 			<-sw
-			killed, err = worker.Run(ctx, "foo")
+			killed, err = worker.Run(ctx, workerId)
 		}()
 		sw <- struct{}{}
 
@@ -104,7 +105,24 @@ func TestWorker(t *testing.T) {
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
+
+	cont, _ := worker.Pause(context.Background(), time.Hour)
+
+	recorder.Lock()
+	assert.Equal("foo", recorder.onStartArg.Id)
+	assert.Nil(recorder.onStartArg.Ctx.Err())
+	onStartCtx := recorder.onStartArg.Ctx
+	assertOnStartCancelled := func(cancelled bool) {
+		if cancelled {
+			assert.Error(onStartCtx.Err())
+		} else {
+			assert.NoError(onStartCtx.Err())
+		}
+	}
+	recorder.Unlock()
+
+	cont()
 
 	var err error
 	_, err = worker.Run(context.TODO(), "foo")
@@ -151,8 +169,10 @@ func TestWorker(t *testing.T) {
 	workExec.step()
 
 	// observing run returning
+	assertOnStartCancelled(false)
 	cancelRun()
 	<-closedOnRunReturn
+	assertOnStartCancelled(true)
 
 	assert.False(worker.State().IsRunning())
 	assert.False(worker.State().IsEnded())
@@ -160,7 +180,7 @@ func TestWorker(t *testing.T) {
 	assertCallCount(2, 2, 2)
 
 	// re-run
-	_, cancelRun, _, closedOnRunReturn = runWorker(worker)
+	_, cancelRun, _, closedOnRunReturn = runWorker(worker, "foo")
 
 	taskCh <- idParam{2}
 	assert.True(worker.State().IsRunning())
@@ -183,13 +203,15 @@ func TestWorker(t *testing.T) {
 	}); diff != "" {
 		t.Fatalf("workFn must be called with param sent though paramCh. diff = %s", diff)
 	}
-	if diff := cmp.Diff(recorder.receivedArgs, []idParam{{0}, {1}, {2}}); diff != "" {
+	if diff := cmp.Diff(recorder.receivedArgs, []hookArg{
+		{"foo", idParam{0}, nil}, {"foo", idParam{1}, nil}, {"foo", idParam{2}, nil},
+	}); diff != "" {
 		t.Fatalf("onTaskReceived must be called with param sent though paramCh. diff = %s", diff)
 	}
-	if diff := cmp.Diff(recorder.doneArgs, []doneArg{
-		{Param: idParam{0}, Err: ErrInt(0)},
-		{Param: idParam{1}, Err: ErrInt(1)},
-		{Param: idParam{2}, Err: ErrInt(2)},
+	if diff := cmp.Diff(recorder.doneArgs, []hookArg{
+		{Id: "foo", Param: idParam{0}, Err: ErrInt(0)},
+		{Id: "foo", Param: idParam{1}, Err: ErrInt(1)},
+		{Id: "foo", Param: idParam{2}, Err: ErrInt(2)},
 	}); diff != "" {
 		t.Fatalf("onTaskDone must be called with param sent though paramCh, and error returned from workFn. diff = %s", diff)
 	}
@@ -208,7 +230,7 @@ func TestWorker_context_passed_to_work_fn_is_cancelled_after_Kill_is_called(t *t
 	_,
 		cancelRun,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -254,7 +276,7 @@ func TestWorker_killed_when_taskCh_is_closed(t *testing.T) {
 	_,
 		_,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 
 	defer func() {
 		<-closedOnRunReturn
@@ -286,7 +308,7 @@ func TestWorker_killed_when_work_fn_panics(t *testing.T) {
 	_,
 		_,
 		runRetValue,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 
 	workExec.MustPanicWith("foo")
 
@@ -317,7 +339,7 @@ func TestWorker_killed_when_work_fn_calls_Goexit(t *testing.T) {
 	_,
 		_,
 		_,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 
 	workExec.onCalledHook = func() {
 		runtime.Goexit()
@@ -344,7 +366,7 @@ func TestWorker_pause(t *testing.T) {
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -464,7 +486,7 @@ func TestWorker_pause_is_released_immediately_after_Kill(t *testing.T) {
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -497,7 +519,7 @@ func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
 	_,
 		cancelRun,
 		_,
-		closedOnRunReturn := runWorker(worker)
+		closedOnRunReturn := runWorker(worker, "foo")
 	defer func() {
 		<-closedOnRunReturn
 	}()
@@ -531,4 +553,45 @@ func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
 	}
 
 	assert.False(cont())
+}
+
+func TestWorker_ok_without_option(t *testing.T) {
+	assert := assert.New(t)
+
+	workExec := newWorkFn()
+	taskCh := make(chan idParam)
+
+	worker := NewWorker[string, idParam](
+		workExec,
+		taskCh,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		<-done
+		worker.Run(ctx, "foo")
+		close(done)
+	}()
+	done <- struct{}{}
+
+	idParamFactory := createIdParamFactory()
+	for i := 0; i < 5; i++ {
+		taskCh <- idParamFactory()
+		workExec.step()
+	}
+
+	workExec.ExhaustCalledCh()
+	waiter := timing.CreateWaiterFn(func() { <-workExec.called })
+	taskCh <- idParamFactory()
+	waiter()
+
+	workExec.Lock()
+	assert.Len(workExec.args, 5)
+	workExec.Unlock()
+
+	workExec.step()
+
+	cancel()
+	<-done
 }

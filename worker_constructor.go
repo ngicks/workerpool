@@ -1,15 +1,18 @@
 package workerpool
 
+import "context"
+
 // workerConstructor is a aggregated parameters
 // which are related to worker construction.
 type workerConstructor[K comparable, T any] struct {
 	IdPool        IdPool[K]
 	Exec          WorkExecuter[K, T]
-	OnReceive     func(p T)
-	OnDone        func(p T, err error)
+	OnStart       func(ctx context.Context, k K)
+	OnReceive     func(k K, p T)
+	OnDone        func(k K, p T, err error)
 	TaskCh        chan T
-	recordReceive func(p T)
-	recordDone    func(p T, err error)
+	recordReceive func(k K, p T)
+	recordDone    func(k K, p T, err error)
 }
 
 func (p *workerConstructor[K, T]) Build() *worker[K, T] {
@@ -24,21 +27,29 @@ func (p *workerConstructor[K, T]) Build() *worker[K, T] {
 }
 
 func (p *workerConstructor[K, T]) build() *Worker[K, T] {
-	combinedOnTaskReceived := func(param T) {
+	combinedOnTaskReceived := func(id K, param T) {
 		if p.OnReceive != nil {
-			p.OnReceive(param)
+			p.OnReceive(id, param)
 		}
 		if p.recordReceive != nil {
-			p.recordReceive(param)
+			p.recordReceive(id, param)
 		}
 	}
-	combinedOnTaskDone := func(param T, err error) {
+	combinedOnTaskDone := func(id K, param T, err error) {
 		if p.recordDone != nil {
-			p.recordDone(param, err)
+			p.recordDone(id, param, err)
 		}
 		if p.OnDone != nil {
-			p.OnDone(param, err)
+			p.OnDone(id, param, err)
 		}
 	}
-	return NewWorker(p.Exec, p.TaskCh, combinedOnTaskReceived, combinedOnTaskDone)
+
+	opts := []workerOption[K, T]{
+		SetOnTaskReceived(combinedOnTaskReceived),
+		SetOnTaskDone(combinedOnTaskDone),
+	}
+	if p.OnStart != nil {
+		opts = append(opts, SetOnStart[K, T](p.OnStart))
+	}
+	return NewWorker(p.Exec, p.TaskCh, opts...)
 }

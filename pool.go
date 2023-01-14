@@ -80,10 +80,10 @@ func New[K comparable, T any](
 		IdPool: idPool,
 		Exec:   exec,
 		TaskCh: w.taskCh,
-		recordReceive: func(T) {
+		recordReceive: func(K, T) {
 			add(1)
 		},
-		recordDone: func(T, error) {
+		recordDone: func(K, T, error) {
 			add(-1)
 		},
 	}
@@ -124,11 +124,20 @@ func (p *Pool[K, T]) Add(delta int) (ok bool) {
 	p.workerCond.L.Lock()
 	defer p.workerCond.L.Unlock()
 
+	added := false
+	defer func() {
+		if added {
+			p.workerCond.Broadcast()
+		}
+	}()
+
 	for i := 0; i < delta; i++ {
 		worker := p.constructor.Build()
 		if worker == nil {
 			return false
 		}
+
+		added = true
 
 		runCtx, cancel := context.WithCancel(context.Background())
 		worker.SetCancelFn(cancel)
@@ -142,7 +151,7 @@ func (p *Pool[K, T]) Add(delta int) (ok bool) {
 		}()
 
 	}
-	p.workerCond.Broadcast()
+
 	return true
 }
 

@@ -68,7 +68,7 @@ func TestPool(t *testing.T) {
 
 	pool := New[string, idParam](
 		w, NewUuidPool(),
-		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		SetHook[string](nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
 	assertWorkerNum := createAssertWorkerNum(t, pool)
@@ -437,7 +437,7 @@ func TestPool_Pause_timeout(t *testing.T) {
 
 	pool := New[string, idParam](
 		workExec, NewUuidPool(),
-		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		SetHook[string](nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 
 	pool.Add(10)
@@ -583,6 +583,24 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 	defer pool.Wait()
 	defer pool.Remove(15)
 
+	waitWithTimeout := func(condition func(alive, sleeping, active int) bool) {
+		timedOut := make(chan struct{})
+		timer := time.AfterFunc(time.Second, func() {
+			t.Errorf("WaitUntil timed-out")
+			close(timedOut)
+		})
+		done := make(chan struct{})
+		go func() { pool.WaitUntil(condition); close(done) }()
+
+		select {
+		case <-timedOut:
+			alive, sleeping, active := pool.Len()
+			t.Logf("alive = %d, sleeping = %d, active = %d", alive, sleeping, active)
+		case <-done:
+		}
+		timer.Stop()
+	}
+
 	for i := 0; i < 5; i++ {
 		assert.True(pool.Add(1))
 	}
@@ -590,7 +608,7 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 		assert.False(pool.Add(1))
 	}
 
-	pool.WaitUntil(func(alive, sleeping, active int) bool {
+	waitWithTimeout(func(alive, sleeping, active int) bool {
 		return alive == 5
 	})
 
@@ -599,7 +617,7 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 		workExec.step()
 	}
 
-	pool.WaitUntil(func(alive, sleeping, active int) bool {
+	waitWithTimeout(func(alive, sleeping, active int) bool {
 		return active == 0
 	})
 
@@ -611,9 +629,13 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 
 	pool.Sender() <- idParam{}
 
+	waitWithTimeout(func(alive, sleeping, active int) bool {
+		return active == 1
+	})
+
 	// non-active workers take precedence.
 	pool.Remove(4)
-	pool.WaitUntil(func(alive, sleeping, active int) bool {
+	waitWithTimeout(func(alive, sleeping, active int) bool {
 		return sleeping == 0
 	})
 
@@ -625,7 +647,7 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 
 	workExec.step()
 
-	pool.WaitUntil(func(alive, sleeping, active int) bool {
+	waitWithTimeout(func(alive, sleeping, active int) bool {
 		return active == 0
 	})
 
@@ -634,6 +656,5 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 		slice.Has([]string{"1", "2", "3", "4", "5"}, ids[len(ids)-1]),
 		"id must be reused",
 	)
-
 	mu.Unlock()
 }

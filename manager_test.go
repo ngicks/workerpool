@@ -19,7 +19,7 @@ func TestManager(t *testing.T) {
 	pool := New[string, idParam](
 		workExec,
 		NewUuidPool(),
-		SetHook[string](recorderHook.onTaskReceived, recorderHook.onTaskDone),
+		SetHook(nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 	manager := NewManager(
 		pool, 31,
