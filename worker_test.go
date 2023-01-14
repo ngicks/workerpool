@@ -85,10 +85,6 @@ func setupWorker() (
 	return worker, taskCh, workExec, recorder, runWorker
 }
 
-func waitUntilRunning[K comparable, T any](worker *Worker[K, T]) {
-	worker.WaitUntil(func(state WorkerState) bool { return state.IsRunning() })
-}
-
 func TestWorker(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -525,8 +521,6 @@ func TestWorker_cancelling_ctx_after_Pause_returned_is_noop(t *testing.T) {
 	}()
 	defer cancelRun()
 
-	waitUntilRunning(worker)
-
 	pauseCtx, pauseCancel := context.WithCancel(context.Background())
 	cont, err := worker.Pause(pauseCtx, 5*time.Millisecond)
 	assert.NotNil(cont)
@@ -594,4 +588,43 @@ func TestWorker_ok_without_option(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestWorker_start_while_pause(t *testing.T) {
+	assert := assert.New(t)
+
+	worker,
+		_,
+		_,
+		_,
+		runWorker := setupWorker()
+
+	_,
+		cancelRun,
+		_,
+		closedOnRunReturn := runWorker(worker, "foo")
+	defer func() {
+		<-closedOnRunReturn
+	}()
+	defer cancelRun()
+
+	cont, _ := worker.Pause(context.Background(), time.Hour)
+
+	done := make(chan struct{})
+	go func() {
+		<-done
+		killed, err := worker.Run(context.Background(), "bar")
+		assert.False(killed)
+		assert.ErrorIs(err, ErrAlreadyRunning)
+		close(done)
+	}()
+	done <- struct{}{}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Millisecond):
+		t.Errorf("Run must be return immediately with ErrAlreadyRunning but is not")
+	}
+
+	cont()
 }

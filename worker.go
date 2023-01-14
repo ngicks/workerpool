@@ -18,8 +18,13 @@ const (
 )
 
 const (
-	EndedMask  WorkerState = 1 << 16
-	ActiveMask WorkerState = 1 << 17
+	EndedMask WorkerState = 1 << (16 + iota)
+	ActiveMask
+)
+
+const (
+	formerStatesMask = 0b1111111111111111
+	latterStateMask  = 0b111111111111111 << 16
 )
 
 func (s WorkerState) name() string {
@@ -45,14 +50,11 @@ func (s WorkerState) name() string {
 }
 
 func (s WorkerState) set(state WorkerState) WorkerState {
-	return s&(EndedMask|ActiveMask) | state&^(EndedMask|ActiveMask)
+	return s&latterStateMask | state&^latterStateMask
 }
 
 func (s WorkerState) setEnded() WorkerState {
 	return s | EndedMask
-}
-func (s WorkerState) unsetEnded() WorkerState {
-	return s &^ EndedMask
 }
 
 func (s WorkerState) setActive() WorkerState {
@@ -63,7 +65,7 @@ func (s WorkerState) unsetActive() WorkerState {
 }
 
 func (s WorkerState) State() (state WorkerState, isEnded bool) {
-	return s.unsetEnded().unsetActive(), s.IsEnded()
+	return s &^ latterStateMask, s.IsEnded()
 }
 
 func (s WorkerState) IsEnded() bool {
@@ -77,6 +79,9 @@ func (s WorkerState) IsPaused() bool {
 }
 func (s WorkerState) IsActive() bool {
 	return s&ActiveMask > 0
+}
+func (s WorkerState) IsStarted() bool {
+	return s&^latterStateMask > 0
 }
 
 // swap out this if tests need to.
@@ -421,7 +426,7 @@ func (w *Worker[K, T]) start() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
-	if !w.state.IsRunning() {
+	if !w.state.IsStarted() {
 		w.state = w.state.set(Running)
 		w.stateCond.Broadcast()
 		return true
@@ -433,7 +438,7 @@ func (w *Worker[K, T]) stop() bool {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
-	if w.state.IsRunning() {
+	if w.state.IsStarted() {
 		w.state = w.state.set(Stopped)
 		w.stateCond.Broadcast()
 		return true
