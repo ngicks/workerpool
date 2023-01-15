@@ -578,7 +578,7 @@ func TestPool_worker_is_aware_of_id(t *testing.T) {
 
 	pool := New[string, idParam](
 		workExec,
-		NewFixedIdPool([]string{"1", "2", "3", "4", "5"}),
+		NewQueueIdPool([]string{"1", "2", "3", "4", "5"}),
 	)
 
 	defer pool.Wait()

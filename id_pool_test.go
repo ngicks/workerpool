@@ -92,15 +92,19 @@ func TestIdPool(t *testing.T) {
 	testIdPool[string](t, NewUuidPool(), "uuid")
 	testIdPool[string](t, NewSyncIdPool(randStr), "sync pool string")
 	testIdPool[uint64](t, NewSyncIdPool(randNum), "sync pool uint64")
-	testIdPool[string](t, NewFixedIdPool(randSlice(100)), "fixed id pool string")
-	testIdPool[string](t, NewFixedIdPoolCloned(randSlice(100)), "fixed id pool string")
+	testIdPool[string](t, NewQueueIdPool(randSlice(100)), "queue id pool string")
+	testIdPool[string](t, NewQueueIdPoolCloned(randSlice(100)), "queue id pool string")
+	testIdPool[string](t, NewStackIdPool(randSlice(100)), "stack id pool string")
+	testIdPool[string](t, NewStackIdPoolCloned(randSlice(100)), "stack id pool string")
 	testIdPool[string](t, NewLimitedIdPool(randStr, 100), "limited id pool string")
 
 	testIdPoolRace[string](t, NewUuidPool(), "uuid")
 	testIdPoolRace[string](t, NewSyncIdPool(randStr), "sync pool string")
 	testIdPoolRace[uint64](t, NewSyncIdPool(randNum), "sync pool uint64")
-	testIdPoolRace[string](t, NewFixedIdPool(randSlice(100)), "fixed id pool string")
-	testIdPoolRace[string](t, NewFixedIdPoolCloned(randSlice(100)), "fixed id pool string")
+	testIdPoolRace[string](t, NewQueueIdPool(randSlice(100)), "queue id pool string")
+	testIdPoolRace[string](t, NewQueueIdPoolCloned(randSlice(100)), "queue id pool string")
+	testIdPoolRace[string](t, NewStackIdPool(randSlice(100)), "stack id pool string")
+	testIdPoolRace[string](t, NewStackIdPoolCloned(randSlice(100)), "stack id pool string")
 	testIdPoolRace[string](t, NewLimitedIdPool(randStr, 100), "limited id pool string")
 }
 
@@ -121,8 +125,10 @@ func TestIdPoolLen(t *testing.T) {
 	}
 
 	for _, limited := range []IdPool[string]{
-		NewFixedIdPool(randSlice(100)),
-		NewFixedIdPoolCloned(randSlice(100)),
+		NewQueueIdPool(randSlice(100)),
+		NewQueueIdPoolCloned(randSlice(100)),
+		NewStackIdPool(randSlice(100)),
+		NewStackIdPoolCloned(randSlice(100)),
 		NewLimitedIdPool(randStr, 100),
 	} {
 		ids := make([]string, 50)
@@ -141,15 +147,53 @@ func TestIdPoolLen(t *testing.T) {
 func TestIdPoolFixed(t *testing.T) {
 	assert := assert.New(t)
 
-	{
+	for _, tc := range []struct {
+		name            string
+		constructor     func(slice []string) IdPool[string]
+		fifo            bool
+		shouldPropagate bool
+	}{
+		{"NewQueueIdPool", func(q []string) IdPool[string] { return NewQueueIdPool(q) }, true, true},
+		{"NewQueueIdPoolCloned", func(q []string) IdPool[string] { return NewQueueIdPoolCloned(q) }, true, false},
+		{"NewStackIdPool", func(q []string) IdPool[string] { return NewStackIdPool(q) }, false, true},
+		{"NewStackIdPoolCloned", func(q []string) IdPool[string] { return NewStackIdPoolCloned(q) }, false, false},
+	} {
 		inputSlice := randSlice(100)
-		p := NewFixedIdPool(inputSlice)
+		p := tc.constructor(inputSlice)
 
 		for i := 0; i < 100; i++ {
-			inputValue := inputSlice[i]
+			var inputValue, msg string
+			if tc.fifo {
+				inputValue = inputSlice[i]
+				msg = "must be FIFO"
+			} else {
+				inputValue = inputSlice[len(inputSlice)-1-i]
+				msg = "must be LIFO"
+			}
 			v, _ := p.Get()
-			assert.Equal(inputValue, v, "must be FIFO")
-			assert.Equal("", inputSlice[i], "mutation")
+			if !assert.Equal(inputValue, v, msg) {
+				break
+			}
+
+			var assertion func(expected interface{}, actual interface{}, msgAndArgs ...interface{}) bool
+			if tc.shouldPropagate {
+				assertion = assert.Equal
+				msg = "%s: input slice is not mutated"
+			} else {
+				assertion = assert.NotEqual
+				msg = "%s: input slice is mutated"
+			}
+
+			var sliceValue string
+			if tc.fifo {
+				sliceValue = inputSlice[i]
+			} else {
+				sliceValue = inputSlice[len(inputSlice)-1-i]
+			}
+
+			if !assertion("", sliceValue, msg, tc.name) {
+				break
+			}
 		}
 
 		for i := 0; i < 5; i++ {
@@ -163,32 +207,15 @@ func TestIdPoolFixed(t *testing.T) {
 
 		for i := 0; i < 3; i++ {
 			v, _ := p.Get()
-			assert.Equal(strconv.FormatInt(int64(i+1), 10), v)
-		}
-	}
-	{
-		inputSlice := randSlice(100)
-		p := NewFixedIdPoolCloned(inputSlice)
-
-		for i := 0; i < 100; i++ {
-			inputValue := inputSlice[i]
-			v, _ := p.Get()
-			assert.Equal(inputValue, v, "must be FIFO")
-			assert.NotEqual("", inputSlice[i], "no mutation propagation")
-		}
-
-		for i := 0; i < 5; i++ {
-			_, ok := p.Get()
-			assert.False(ok)
-		}
-
-		p.Put("1")
-		p.Put("2")
-		p.Put("3")
-
-		for i := 0; i < 3; i++ {
-			v, _ := p.Get()
-			assert.Equal(strconv.FormatInt(int64(i+1), 10), v)
+			var expected int
+			if tc.fifo {
+				expected = i + 1
+			} else {
+				expected = 3 - i
+			}
+			if !assert.Equal(strconv.FormatInt(int64(expected), 10), v) {
+				break
+			}
 		}
 	}
 }

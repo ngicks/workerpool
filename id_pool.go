@@ -8,12 +8,22 @@ import (
 	syncparam "github.com/ngicks/type-param-common/sync-param"
 )
 
+// IdPool is a collection of ids.
+// Implementations may decide to simply use sync.Pool,
+// or to use slices, strictly limiting contents of the pool.
 type IdPool[K comparable] interface {
+	// Get returns an id when ok is true.
+	// Ids might be reused if id is stored back to the pool with Put.
 	Get() (x K, ok bool)
+	// Put adds x to the pool.
+	// Putting x allows it to be reused with Get. It is however the implementation decision.
 	Put(x K)
+	// SizeHint returns number of contents remaining in the pool.
+	// It returns negative value if content length is unknown.
 	SizeHint() int
 }
 
+// SyncIdPool is a wrapper of sync.Pool that implements the IdPool.
 type SyncIdPool[K comparable] struct {
 	pool syncparam.Pool[K]
 }
@@ -57,24 +67,48 @@ func (p *UuidPool) SizeHint() int {
 	return -1
 }
 
-type FixedIdPool[K comparable] struct {
-	mu sync.Mutex
-	q  slice.Queue[K]
+type QueueLike[T any] interface {
+	Push(v T)
+	Pop() (v T, popped bool)
+	Len() int
 }
 
-// NewFixedIdPool returns a fixed id pool.
+// FixedIdPool is an id pool that returns ordered, pre-generated ids.
+type FixedIdPool[K comparable] struct {
+	mu sync.Mutex
+	q  QueueLike[K]
+}
+
+// NewQueueIdPool returns a queue-backed fixed id pool, which consumes and adds ids FIFO order.
 // queue will be mutated on each call of Get.
-// If you need to avoid this, use NewFixedIdPoolCloned.
-func NewFixedIdPool[K comparable](queue []K) *FixedIdPool[K] {
+// If you need to avoid this, use NewQueueIdPoolCloned.
+func NewQueueIdPool[K comparable](queue []K) *FixedIdPool[K] {
+	q := slice.Queue[K](queue)
 	return &FixedIdPool[K]{
-		q: queue,
+		q: &q,
 	}
 }
 
-func NewFixedIdPoolCloned[K comparable](queue []K) *FixedIdPool[K] {
+func NewQueueIdPoolCloned[K comparable](queue []K) *FixedIdPool[K] {
 	cloned := make([]K, len(queue))
 	copy(cloned, queue)
-	return NewFixedIdPool(cloned)
+	return NewQueueIdPool(cloned)
+}
+
+// NewStackIdPool returns a stack-backed fixed id pool, which consumes and adds ids LIFO order.
+// stack will be mutated on each call of Get.
+// If you need to avoid this, use NewStackIdPoolCloned.
+func NewStackIdPool[K comparable](stack []K) *FixedIdPool[K] {
+	q := slice.Stack[K](stack)
+	return &FixedIdPool[K]{
+		q: &q,
+	}
+}
+
+func NewStackIdPoolCloned[K comparable](queue []K) *FixedIdPool[K] {
+	cloned := make([]K, len(queue))
+	copy(cloned, queue)
+	return NewStackIdPool(cloned)
 }
 
 func (p *FixedIdPool[K]) Get() (x K, ok bool) {
@@ -93,7 +127,7 @@ func (p *FixedIdPool[K]) SizeHint() int {
 	return p.q.Len()
 }
 
-// LimitedIdPool is a id pool that generates limited number of K.
+// LimitedIdPool is an id pool that generates limited number of K.
 // K stored back to the pool with Put() might be reused.
 type LimitedIdPool[K comparable] struct {
 	mu        sync.Mutex
