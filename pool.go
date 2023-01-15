@@ -35,9 +35,7 @@ func (w *worker[K, T]) SetCancelFn(fn context.CancelFunc) {
 }
 
 func (w *worker[K, T]) Cancel() {
-	if w.cancelFn != nil {
-		w.cancelFn()
-	}
+	w.cancelFn()
 }
 
 // Pool is a collection of workers, which

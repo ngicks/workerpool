@@ -12,7 +12,7 @@ type Option[K comparable, T any] func(p *Pool[K, T])
 
 func SetTaskChannel[K comparable, T any](taskCh chan T) Option[K, T] {
 	if taskCh == nil {
-		panic("ch is nil")
+		panic("SetTaskChannel: taskCh must not be nil")
 	}
 	return func(w *Pool[K, T]) {
 		w.taskCh = taskCh
@@ -26,7 +26,7 @@ func SetTaskChannel[K comparable, T any](taskCh chan T) Option[K, T] {
 // cb may be called multiple times, simultaneously.
 func SetAbnormalReturnCb[K comparable, T any](cb func(err error)) Option[K, T] {
 	if cb == nil {
-		panic("cb is nil")
+		panic("SetAbnormalReturnCb: cb must not be nil")
 	}
 	return func(p *Pool[K, T]) {
 		p.onAbnormalReturn = cb
@@ -75,18 +75,28 @@ func DisableActiveWorkerNumRecord[K comparable, T any]() Option[K, T] {
 type ManagerOption[K comparable, T any] func(wp *Manager[K, T])
 
 func SetRemovalBatchSize[K comparable, T any](size int) ManagerOption[K, T] {
+	if size <= 0 {
+		panic("SetRemovalBatchSize: size must be positive and non-zero")
+	}
 	return func(wp *Manager[K, T]) {
 		wp.removalBatchSize = size
 	}
 }
 
 func SetMaxWaiting[K comparable, T any](maxWaiting int) ManagerOption[K, T] {
+	if maxWaiting < 0 {
+		panic("SetRemovalInterval: maxWaiting must be positive")
+	}
+
 	return func(wp *Manager[K, T]) {
 		wp.maxWaiting = maxWaiting
 	}
 }
 
 func SetRemovalInterval[K comparable, T any](interval time.Duration) ManagerOption[K, T] {
+	if interval <= 0 {
+		panic("SetRemovalInterval: interval must be positive and non-zero")
+	}
 	return func(wp *Manager[K, T]) {
 		wp.removalInterval = interval
 	}

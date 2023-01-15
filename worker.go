@@ -120,6 +120,8 @@ func SetOnTaskReceived[K comparable, T any](onTaskReceived func(K, T)) workerOpt
 	return func(w *Worker[K, T]) {
 		if onTaskReceived != nil {
 			w.onTaskReceived = onTaskReceived
+		} else {
+			w.onTaskReceived = func(id K, param T) {}
 		}
 	}
 }
@@ -128,13 +130,19 @@ func SetOnTaskDone[K comparable, T any](onTaskDone func(K, T, error)) workerOpti
 	return func(w *Worker[K, T]) {
 		if onTaskDone != nil {
 			w.onTaskDone = onTaskDone
+		} else {
+			w.onTaskDone = func(id K, param T, err error) {}
 		}
 	}
 }
 
 func SetOnStart[K comparable, T any](onStart func(context.Context, K)) workerOption[K, T] {
 	return func(w *Worker[K, T]) {
-		w.onStart = onStart
+		if onStart != nil {
+			w.onStart = onStart
+		} else {
+			w.onStart = nil
+		}
 	}
 }
 
