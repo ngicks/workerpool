@@ -146,11 +146,9 @@ func SetOnStart[K comparable, T any](onStart func(context.Context, K)) workerOpt
 	}
 }
 
-// Worker represents a single task executor,
-// It works on a single task, which is sent though task channel, at a time.
-// It may be in stopped-state where loop is stopped,
-// running-state where it is working in loop,
-// or ended-state where no way is given to step back into working-state again.
+// Worker is a series of processes, where it pulls tasks from the channel, executes them through WorkExecutor,
+// and also manages states.
+// Worker may associate itself to the resource, which is pointed by the id, via onStart, onTaskReceived and onTaskDone hooks.
 type Worker[K comparable, T any] struct {
 	stateCond *sync.Cond
 	state     WorkerState
@@ -168,8 +166,7 @@ type Worker[K comparable, T any] struct {
 	timerFactory func() common.Timer
 }
 
-// NewWorker returns initialized Worker.
-// Both or either of onTaskReceived and onTaskDone can be nil.
+// NewWorker returns a stopped Worker.
 func NewWorker[K comparable, T any](
 	fn WorkExecuter[K, T],
 	taskCh <-chan T,
@@ -197,12 +194,12 @@ func NewWorker[K comparable, T any](
 // and WorkExecutor returns if it has an ongoing task.
 // Or it could be return early if conditions below are met.
 //
-//   - if worker is already ended. (with ErrAlreadyEnded set)
-//   - if Run is called simultaneously. (with ErrAlreadyRunning set)
+//   - If worker is already ended. (with ErrAlreadyEnded set)
+//   - If Run is called simultaneously. (with ErrAlreadyRunning set)
 //
 // The ended state can be reached if (1) Kill is called,
 // (2) WorkExecutor returned abnormally (panic or runtime.Goexit),
-// or (3) taskCh is closed.
+// (3) taskCh is closed, or (4) WorkExecutor returns ErrWorkerFatal.
 func (w *Worker[K, T]) Run(ctx context.Context, id K) (killed bool, err error) {
 	if w.State().IsEnded() {
 		return false, ErrAlreadyEnded
