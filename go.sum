@@ -12,8 +12,8 @@ github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+
 github.com/josharian/intern v1.0.0/go.mod h1:5DoeVV0s6jJacbCEi61lwdGj/aVlrQvzHFFd8Hwg//Y=
 github.com/mailru/easyjson v0.7.7 h1:UGYAvKxe3sBsEDzO8ZeWOSlIQfWFlxbzLZe7hwFURr0=
 github.com/mailru/easyjson v0.7.7/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJJLY9Nlc=
-github.com/ngicks/gommon/pkg/common v0.1.0 h1:AuR9evtdT/j3SVDI2jC9FCmymISIiNU+kRvj0IpB6ik=
-github.com/ngicks/gommon/pkg/common v0.1.0/go.mod h1:cOK3mkJaG6SXytBTP5tE2iAXj9idOvXyQxgtvuDb2Ic=
+github.com/ngicks/gommon/pkg/common v0.2.0 h1:rToyjjLKjkZCN2/joVedMUARL7JePl/o8DXy6RUpvL4=
+github.com/ngicks/gommon/pkg/common v0.2.0/go.mod h1:cOK3mkJaG6SXytBTP5tE2iAXj9idOvXyQxgtvuDb2Ic=
 github.com/ngicks/gommon/pkg/randstr v0.0.1 h1:mWxoBSxf02/M/zJhfO/77UB7IOeS0p1Gx9DtuP0YV+0=
 github.com/ngicks/gommon/pkg/randstr v0.0.1/go.mod h1:IZ1Q1EiYCacKQcS4CVDN8Na+V+lcbkloMz/vTaPnh4o=
 github.com/ngicks/gommon/pkg/timing v0.0.3 h1:4McuEzQ+rzStbcczmR2YjP0sxWQStlI75B4ckNSZXec=
