@@ -4,8 +4,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/ngicks/type-param-common/slice"
-	syncparam "github.com/ngicks/type-param-common/sync-param"
+	"github.com/ngicks/generic/slice"
+	"github.com/ngicks/genericsync"
 )
 
 // IdPool is a collection of ids.
@@ -25,12 +25,14 @@ type IdPool[K comparable] interface {
 
 // SyncIdPool is a wrapper of sync.Pool that implements the IdPool.
 type SyncIdPool[K comparable] struct {
-	pool syncparam.Pool[K]
+	pool genericsync.Pool[K]
 }
 
 func NewSyncIdPool[K comparable](new func() K) *SyncIdPool[K] {
+	p := genericsync.Pool[K]{}
+	p.SetNew(new)
 	return &SyncIdPool[K]{
-		pool: syncparam.NewPool(new),
+		pool: p,
 	}
 }
 
@@ -50,8 +52,10 @@ func (p *SyncIdPool[K]) SizeHint() int {
 type UuidPool SyncIdPool[string]
 
 func NewUuidPool() *UuidPool {
+	p := genericsync.Pool[string]{}
+	p.SetNew(uuid.NewString)
 	return &UuidPool{
-		pool: syncparam.NewPool(uuid.NewString),
+		pool: p,
 	}
 }
 
@@ -133,14 +137,16 @@ type LimitedIdPool[K comparable] struct {
 	mu        sync.Mutex
 	remaining uint
 	max       uint
-	pool      syncparam.Pool[K]
+	pool      genericsync.Pool[K]
 }
 
 func NewLimitedIdPool[K comparable](new func() K, size uint) *LimitedIdPool[K] {
+	p := genericsync.Pool[K]{}
+	p.SetNew(new)
 	return &LimitedIdPool[K]{
 		remaining: size,
 		max:       size,
-		pool:      syncparam.NewPool(new),
+		pool:      p,
 	}
 }
 

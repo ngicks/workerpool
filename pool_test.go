@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ngicks/generic/slice"
 	"github.com/ngicks/gommon/pkg/timing"
-	"github.com/ngicks/type-param-common/slice"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

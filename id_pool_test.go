@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	util "github.com/ngicks/generic"
+	"github.com/ngicks/generic/set"
 	"github.com/ngicks/gommon/pkg/randstr"
-	"github.com/ngicks/type-param-common/set"
-	"github.com/ngicks/type-param-common/util"
 	"github.com/stretchr/testify/assert"
 )
 
