@@ -200,8 +200,8 @@ func TestManager(t *testing.T) {
 	fakeTimer.Send(time.Now())
 	waiter()
 
-	assertAliveWorkerNum(8)
-
+	// observe to prevent the optimizer from removing some codes.
+	waitWorkerNum(8, 0)
 	for i := 0; i < 3; i++ {
 		waiter := waitExecReturn()
 		workExec.step()
