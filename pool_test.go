@@ -369,7 +369,7 @@ func TestPool_Pause(t *testing.T) {
 		pool.Sender() <- idParam{}
 	}
 
-	var continueWorkers func() bool
+	var continueWorkers func()
 	var err error
 	pauseReturn := make(chan struct{})
 	go func() {
@@ -413,9 +413,8 @@ func TestPool_Pause(t *testing.T) {
 	}
 	pool.workerCond.L.Unlock()
 
-	assert.True(continueWorkers())
+	continueWorkers()
 	assert.NoError(err)
-	assert.False(continueWorkers())
 
 	pool.workerCond.L.Lock()
 	for pair := pool.workers.Oldest(); pair != nil; pair = pair.Next() {
@@ -465,7 +464,9 @@ func TestPool_Pause_timeout(t *testing.T) {
 		pool.Sender() <- idParam{}
 	}
 
-	var continueWorkers func() bool
+	var continueWorkers func()
+	defer func() { continueWorkers() }()
+
 	var err error
 	pauseReturn := make(chan struct{})
 	go func() {
@@ -494,10 +495,6 @@ func TestPool_Pause_timeout(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("Pause must return at this point. all workers are blocking")
 	}
-
-	<-time.After(time.Millisecond)
-
-	assert.False(continueWorkers(), "must timed out")
 	assert.NoError(err)
 }
 func TestPool_Pause_cancelling_context(t *testing.T) {
@@ -526,7 +523,7 @@ func TestPool_Pause_cancelling_context(t *testing.T) {
 		pool.Sender() <- idParam{}
 	}
 
-	var continueWorkers func() bool
+	var continueWorkers func()
 	var err error
 	pauseReturn := make(chan struct{})
 	go func() {

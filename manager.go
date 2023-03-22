@@ -133,7 +133,7 @@ func (m *Manager[K, T]) Kill() {
 func (m *Manager[K, T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
-) (continueWorkers func() (cancelled bool), err error) {
+) (continueWorkers func(), err error) {
 	return m.pool.Pause(ctx, timeout)
 }
 

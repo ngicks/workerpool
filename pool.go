@@ -284,7 +284,7 @@ func (p *Pool[K, T]) Kill() {
 func (p *Pool[K, T]) Pause(
 	ctx context.Context,
 	timeout time.Duration,
-) (continueWorkers func() (cancelled bool), err error) {
+) (continueWorkers func(), err error) {
 	p.workerCond.L.Lock()
 
 	var wg sync.WaitGroup
@@ -307,14 +307,10 @@ func (p *Pool[K, T]) Pause(
 
 	wg.Wait()
 
-	continueFn := func() (cancelled bool) {
-		alreadyCancelled := false
+	continueFn := func() {
 		for _, fn := range continueFns {
-			if !fn() {
-				alreadyCancelled = true
-			}
+			fn()
 		}
-		return !alreadyCancelled
 	}
 
 	select {
