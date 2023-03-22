@@ -41,6 +41,14 @@ func SetLogOnAbnormalReturn[K comparable, T any]() Option[K, T] {
 	}
 }
 
+// SetShouldRecover is an Option that
+// sets whether it should recover on worker panic or not.
+func SetShouldRecover[K comparable, T any](shouldRecover bool) Option[K, T] {
+	return func(p *Pool[K, T]) {
+		p.shouldRecover = shouldRecover
+	}
+}
+
 // SetHook is an Option that sets onWorkerStart, onTaskReceive and onTaskDone hooks.
 // Each function can be nil.
 //

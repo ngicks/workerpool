@@ -217,6 +217,7 @@ func TestPool_Exec_abnormal_return(t *testing.T) {
 	cbCalled := make(chan struct{}, 1)
 	pool := New[string, idParam](
 		w, NewUuidPool(),
+		SetShouldRecover[string, idParam](true),
 		SetAbnormalReturnCb[string, idParam](func(err error) {
 			errorStackMu.Lock()
 			errorStack.PushBack(err)
@@ -340,7 +341,11 @@ func TestPool_Pause(t *testing.T) {
 	})
 	workExec.stack.Push(func(context.Context, string, idParam) error { return nil })
 
-	pool := New[string, idParam](workExec, NewUuidPool())
+	pool := New[string, idParam](
+		workExec,
+		NewUuidPool(),
+		SetShouldRecover[string, idParam](true),
+	)
 
 	pool.Add(10)
 

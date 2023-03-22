@@ -51,6 +51,7 @@ type Pool[K comparable, T any] struct {
 	sleepingWorkers map[K]*worker[K, T]
 
 	constructor      workerConstructor[K, T]
+	shouldRecover    bool
 	onAbnormalReturn func(error)
 }
 
@@ -145,7 +146,7 @@ func (p *Pool[K, T]) Add(delta int) (ok bool) {
 		go func() {
 			defer p.wg.Done()
 			defer cancel()
-			p.runWorker(runCtx, worker, true, p.onAbnormalReturn)
+			p.runWorker(runCtx, worker, p.shouldRecover, p.onAbnormalReturn)
 		}()
 
 	}

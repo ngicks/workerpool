@@ -19,6 +19,7 @@ func TestManager(t *testing.T) {
 	pool := New[string, idParam](
 		workExec,
 		NewUuidPool(),
+		SetShouldRecover[string, idParam](true),
 		SetHook(nil, recorderHook.onTaskReceived, recorderHook.onTaskDone),
 	)
 	manager := NewManager(
