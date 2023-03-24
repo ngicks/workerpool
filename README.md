@@ -75,12 +75,16 @@ func main() {
 }
 ```
 
+## Simple Architecture Diagram
+
+![simplified_architecture_of_workerpool](./diagram.drawio.svg)
+
 ## Features
 
 - Workers can be added / removed dynamically.
 - Hookable: worker start, task receive / done events can be hooked by setting SetHook Option to New.
-- Immune to panicking
-  - Task abnormal returns are recovered and hooked.
+- \[Optional\] Immune to panicking
+  - Task abnormal returns are recovered and hooked, if and only if a corresponding Option is passed to New.
   - You can observe abnormal returns by setting SetAbnormalReturnCb Option to New.
   - It does decrease 1 worker from pool anyway, since fatal situation might be caused by the resource associated to the id.
     - The user need to explicitly call Add(1) again.
