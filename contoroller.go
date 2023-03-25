@@ -17,12 +17,14 @@ func timerFactory() common.Timer { return common.NewTimerReal() }
 
 type onlyExposable[T any] interface {
 	Sender() chan<- T
-	Len() (alive, sleeping int)
+	Len(fetchAlive bool) (workers, sleeping, active int)
 	Kill()
 	Pause(ctx context.Context, fn func(ctx context.Context)) (err error)
 	Wait()
-	WaitUntil(condition func(alive, sleeping int) bool, action ...func())
+	WaitUntil(condition func(workers, sleeping int) bool, action ...func())
 }
+
+var _ onlyExposable[int] = (*Container[int, int])(nil)
 
 type Controller[K comparable, T any] struct {
 	Container onlyExposable[T]
@@ -37,7 +39,11 @@ type Controller[K comparable, T any] struct {
 	timerFactory func() common.Timer
 }
 
-func NewController[K comparable, T any](container *Container[K, T], maxWorker int, opts ...ControllerOption[K, T]) *Controller[K, T] {
+func NewController[K comparable, T any](
+	container *Container[K, T],
+	maxWorker int,
+	opts ...ControllerOption[K, T],
+) *Controller[K, T] {
 	c := &Controller[K, T]{
 		Container:        container,
 		container:        container,
@@ -79,14 +85,14 @@ func (c *Controller[K, T]) Run(ctx context.Context) (task T, hadPending bool, er
 			var zero T
 			return zero, false, nil
 		case <-timer.C():
-			alive, sleeping := c.container.Len()
-			if alive == 0 {
+			workers, _, active := c.container.Len(true)
+			if workers == 0 {
 				// does not need to reset timer here...
 				// until worker is added.
-				// But does it make tests difficult?
+				// But is it hard to test out?
 				continue
 			}
-			waiting := alive + sleeping
+			waiting := workers - active
 
 			if waiting > c.maxWaiting {
 				delta := waiting - c.maxWaiting
@@ -106,8 +112,8 @@ func (c *Controller[K, T]) Run(ctx context.Context) (task T, hadPending bool, er
 			select {
 			case c.container.Sender() <- task:
 			default:
-				alive, sleeping := c.container.Len()
-				delta := c.maxWorker - (alive + sleeping)
+				workers, _, _ := c.container.Len(false)
+				delta := c.maxWorker - workers
 				if delta > 0 {
 					if delta > (c.maxWaiting + 1) {
 						delta = c.maxWaiting + 1

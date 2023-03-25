@@ -3,6 +3,7 @@ package workerpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -19,6 +20,8 @@ type WorkExecuter[K comparable, T any] interface {
 	Exec(ctx context.Context, id K, param T) error
 }
 
+var _ WorkExecuter[string, int] = WorkFn[string, int](nil)
+
 // WorkFn wraps a function so that it can be used as WorkExecutor.
 type WorkFn[K comparable, T any] func(ctx context.Context, id K, param T) error
 
@@ -26,7 +29,10 @@ func (w WorkFn[K, T]) Exec(ctx context.Context, id K, param T) error {
 	return w(ctx, id, param)
 }
 
-var _ WorkExecuter[string, int] = WorkFn[string, int](nil)
+type WorkExecutorInitializer[K comparable] interface {
+	Start(id K)
+	Stop(id K)
+}
 
 var _ Worker[string, string] = (*ExecutorWorker[string, string])(nil)
 
@@ -63,11 +69,11 @@ func (w *ExecutorWorker[K, T]) Id() K {
 	return w.id
 }
 
-func (w *ExecutorWorker[K, T]) Run(ctx context.Context, taskCh <-chan T) (killed bool, err error) {
+func (w *ExecutorWorker[K, T]) Run(ctx context.Context, taskCh <-chan T) error {
 	w.stateCond.L.Lock()
 	if w.state != Stopped {
 		w.stateCond.L.Unlock()
-		return false, ErrAlreadyRunning
+		return ErrAlreadyRunning
 	}
 	w.state = Idle
 	select {
@@ -85,14 +91,11 @@ func (w *ExecutorWorker[K, T]) Run(ctx context.Context, taskCh <-chan T) (killed
 		pauseFn    func()
 	)
 	for {
-		w.stateCond.L.Lock()
-		state := w.state
-		w.stateCond.L.Unlock()
+		var state WorkingState
 
 		switch state {
 		default:
-			// prevent any caller from
-			go panic("")
+			panic(fmt.Sprintf("ExecutorWorker is in an unknown state = %d", state))
 		case Idle:
 			// Reset
 			task = zero
@@ -101,38 +104,41 @@ func (w *ExecutorWorker[K, T]) Run(ctx context.Context, taskCh <-chan T) (killed
 			select {
 			// prevent it from accidentally step forward consecutive
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return nil
 			case <-w.killCh:
-				return true, nil
+				return ErrKilled
 			default:
 				select {
 				case <-ctx.Done():
-					return false, ctx.Err()
+					return nil
 				case <-w.killCh:
-					return true, nil
+					return ErrKilled
 				case pauseFn = <-w.pauseCh:
-					w.withinStateLock(func() {
+					state = w.withinStateLock(func() {
 						w.state = Paused
 					})
 				case task, ok = <-taskCh:
 					if !ok {
-						return true, ErrInputChanClosed
+						return ErrInputChanClosed
 					}
-					w.withinStateLock(func() {
+					state = w.withinStateLock(func() {
 						w.state = Active
 					})
 				}
 			}
 		case Active:
+			var err error
 			func() {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
+				// Kill() sends to kill chan then load + cancel
+				// Here, we'll do reverse thing in a reversed order,
+				// to prevent a race condition.
 				w.cancelFn.Store(&cancel)
 				defer w.cancelFn.Store(nil)
 
 				select {
-				// Prevent race condition.
 				case <-w.killCh:
 					cancel()
 				default:
@@ -142,15 +148,15 @@ func (w *ExecutorWorker[K, T]) Run(ctx context.Context, taskCh <-chan T) (killed
 			}()
 
 			if errors.Is(err, ErrWorkerFatal) {
-				return true, err
+				return err
 			}
 
-			w.withinStateLock(func() {
+			state = w.withinStateLock(func() {
 				w.state = Idle
 			})
 		case Paused:
 			pauseFn()
-			w.withinStateLock(func() {
+			state = w.withinStateLock(func() {
 				w.state = Idle
 			})
 		}
@@ -223,7 +229,7 @@ func (w *ExecutorWorker[K, T]) WaitUntil(condition func(state WorkingState) bool
 
 // withinStateLock executes fn within state lock.
 // If the state changes it sends Broadcast() to notify all waiters of cond.
-func (w *ExecutorWorker[K, T]) withinStateLock(fn func()) {
+func (w *ExecutorWorker[K, T]) withinStateLock(fn func()) WorkingState {
 	w.stateCond.L.Lock()
 	defer w.stateCond.L.Unlock()
 
@@ -233,4 +239,5 @@ func (w *ExecutorWorker[K, T]) withinStateLock(fn func()) {
 		w.onStateChange(w.state)
 		w.stateCond.Broadcast()
 	}
+	return w.state
 }

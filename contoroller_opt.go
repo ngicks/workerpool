@@ -13,7 +13,7 @@ func Set_RemovalBatchSize[K comparable, T any](size int) ControllerOption[K, T] 
 	}
 }
 
-func Set_MaxWaiting[K comparable, T any](maxWaiting int) ControllerOption[K, T] {
+func SetMaxWaiting[K comparable, T any](maxWaiting int) ControllerOption[K, T] {
 	if maxWaiting < 0 {
 		panic("SetRemovalInterval: maxWaiting must be positive")
 	}
@@ -23,7 +23,7 @@ func Set_MaxWaiting[K comparable, T any](maxWaiting int) ControllerOption[K, T] 
 	}
 }
 
-func Set_RemovalInterval[K comparable, T any](interval time.Duration) ControllerOption[K, T] {
+func SetRemovalInterval[K comparable, T any](interval time.Duration) ControllerOption[K, T] {
 	if interval <= 0 {
 		panic("SetRemovalInterval: interval must be positive and non-zero")
 	}

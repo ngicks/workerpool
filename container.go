@@ -10,16 +10,15 @@ import (
 
 type wrappedWorker[K comparable, T any] struct {
 	Worker[K, T]
-	cancel context.CancelFunc
+	cancel   context.CancelFunc
+	Sleeping bool
 }
-
-var _ onlyExposable[int] = (*Container[int, int])(nil)
 
 type Container[K comparable, T any] struct {
 	pool WorkerPool[K, T]
 
-	activeWorkers   map[K]wrappedWorker[K, T]
-	sleepingWorkers map[K]wrappedWorker[K, T]
+	workers  map[K]*wrappedWorker[K, T]
+	sleeping map[K]struct{}
 
 	taskCh chan T
 
@@ -38,8 +37,8 @@ func NewContainer[K comparable, T any](
 	c := &Container[K, T]{
 		pool:             pool,
 		taskCh:           make(chan T),
-		activeWorkers:    make(map[K]wrappedWorker[K, T]),
-		sleepingWorkers:  make(map[K]wrappedWorker[K, T]),
+		workers:          make(map[K]*wrappedWorker[K, T]),
+		sleeping:         make(map[K]struct{}),
 		onAbnormalReturn: func(err error) {},
 		workerCond:       sync.NewCond(&sync.Mutex{}),
 	}
@@ -76,8 +75,8 @@ func (c *Container[K, T]) Add(delta int) (added int) {
 		added++
 
 		runCtx, cancel := context.WithCancel(context.Background())
-		wrapped := wrappedWorker[K, T]{Worker: worker, cancel: cancel}
-		c.activeWorkers[wrapped.Id()] = wrapped
+		wrapped := &wrappedWorker[K, T]{Worker: worker, cancel: cancel}
+		c.workers[wrapped.Id()] = wrapped
 		c.wg.Add(1)
 		go func() {
 			defer func() {
@@ -86,8 +85,8 @@ func (c *Container[K, T]) Add(delta int) (added int) {
 				cancel()
 
 				c.workerCond.L.Lock()
-				delete(c.activeWorkers, worker.Id())
-				delete(c.sleepingWorkers, worker.Id())
+				delete(c.workers, worker.Id())
+				delete(c.sleeping, worker.Id())
 				c.pool.Put(wrapped.Worker)
 				c.workerCond.Broadcast()
 				c.workerCond.L.Unlock()
@@ -117,7 +116,7 @@ func (p *panicErr) Error() string {
 
 func (c *Container[K, T]) runWorker(
 	ctx context.Context,
-	worker wrappedWorker[K, T],
+	worker *wrappedWorker[K, T],
 	shouldRecover bool,
 	abnormalReturnCb func(error),
 ) (workerErr error) {
@@ -148,7 +147,7 @@ func (c *Container[K, T]) runWorker(
 			}
 		}()
 
-		_, workerErr = worker.Run(ctx, c.taskCh)
+		workerErr = worker.Run(ctx, c.taskCh)
 		normalReturn = true
 	}()
 	if !normalReturn {
@@ -171,41 +170,61 @@ func (c *Container[K, T]) Remove(delta int) (removed int) {
 	}()
 
 	oldDelta := delta
-	cancelWorker := func(predicate func(w wrappedWorker[K, T]) bool) {
-		for k, w := range c.activeWorkers {
+	cancelWorker := func(predicate func(w *wrappedWorker[K, T]) bool) {
+		for k, w := range c.workers {
 			if delta == 0 {
 				break
 			}
 			if predicate(w) {
 				delta--
+				c.sleeping[k] = struct{}{}
+				w.Sleeping = true
 				w.cancel()
-				delete(c.activeWorkers, k)
-				c.sleepingWorkers[k] = w
 			}
 		}
 	}
 
-	cancelWorker(func(w wrappedWorker[K, T]) bool { return w.State().IsActive() })
-	cancelWorker(func(w wrappedWorker[K, T]) bool { return true })
+	cancelWorker(func(w *wrappedWorker[K, T]) bool { return w.State() == Active })
+	cancelWorker(func(*wrappedWorker[K, T]) bool { return true })
 
 	removed = oldDelta - delta
 	return removed
 }
 
-func (c *Container[K, T]) Len() (worker int, sleeping int) {
+// Len returns length of workers.
+// It also additionally reports sleeping and active workers.
+// active is a non-negative value only if fetchActive is true, otherwise negative.
+//
+// sleeping means a worker is being deleted via Remove and awaited for completion of a current task,
+// thus not receiving new tasks.
+// Sleeping is always workers >= sleeping.
+//
+// active indicates a worker is actively working on a task.
+// It may report an incorrect active worker count, since Container[K, T] does not lock the state of workers.
+// However there is an invariant where it is always workers >= active.
+func (c *Container[K, T]) Len(fetchActive bool) (workers, sleeping, active int) {
 	c.workerCond.L.Lock()
 	defer c.workerCond.L.Unlock()
-	return len(c.activeWorkers), len(c.sleepingWorkers)
+
+	active = -1
+
+	if fetchActive {
+		active = 0
+		for _, w := range c.workers {
+			if w.State() == Active {
+				active++
+			}
+		}
+	}
+
+	return len(c.workers), len(c.sleeping), active
 }
 
 func (c *Container[K, T]) Kill() {
 	c.workerCond.L.Lock()
 	defer c.workerCond.L.Unlock()
 
-	for _, w := range c.activeWorkers {
-		w.Kill()
-	}
-	for _, w := range c.sleepingWorkers {
+	for _, w := range c.workers {
 		w.Kill()
 	}
 }
@@ -217,19 +236,32 @@ func (c *Container[K, T]) Pause(ctx context.Context, fn func(ctx context.Context
 	c.workerCond.L.Lock()
 	defer c.workerCond.L.Unlock()
 
+	workerNum := len(c.workers) - len(c.sleeping)
+
+	// fast path
+	if workerNum == 0 {
+		return nil
+	}
+
 	workerPauseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	workerPause := make(chan struct{}, len(c.activeWorkers))
+	workerPause := make(chan struct{}, workerNum)
 	workerPauseFn := func(ctx context.Context) {
 		workerPause <- struct{}{}
 		<-ctx.Done()
 	}
 
 	var waitGoroutine sync.WaitGroup
-	for _, w := range c.activeWorkers {
+	for _, w := range c.workers {
+		// sleeping indicates the context passed to Worker's Run is already cancelled.
+		// It cannot be stepped into Paused state.
+		if w.Sleeping {
+			continue
+		}
+
 		waitGoroutine.Add(1)
-		go func(w wrappedWorker[K, T]) {
+		go func(w *wrappedWorker[K, T]) {
 			defer waitGoroutine.Done()
 			w.Pause(workerPauseCtx, workerPauseFn)
 		}(w)
@@ -237,7 +269,7 @@ func (c *Container[K, T]) Pause(ctx context.Context, fn func(ctx context.Context
 
 	var pausedWorker int
 	for {
-		if pausedWorker == len(c.activeWorkers) {
+		if pausedWorker == workerNum {
 			break
 		}
 		select {
@@ -256,14 +288,34 @@ func (c *Container[K, T]) Pause(ctx context.Context, fn func(ctx context.Context
 func (c *Container[K, T]) Wait() {
 	c.wg.Wait()
 }
-func (c *Container[K, T]) WaitUntil(condition func(alive int, sleeping int) bool, action ...func()) {
+func (c *Container[K, T]) WaitUntil(condition func(workers, sleeping int) bool, action ...func()) {
 	c.workerCond.L.Lock()
 	defer c.workerCond.L.Unlock()
 
-	for !condition(len(c.activeWorkers), len(c.sleepingWorkers)) {
+	for !condition(len(c.workers), len(c.sleeping)) {
 		c.workerCond.Wait()
 	}
 	for _, act := range action {
 		act()
+	}
+}
+
+func (c *Container[K, T]) Load(key K) (value *wrappedWorker[K, T], ok bool) {
+	c.workerCond.L.Lock()
+	defer c.workerCond.L.Unlock()
+
+	value, ok = c.workers[key]
+
+	return value, ok
+}
+
+func (c *Container[K, T]) Range(f func(key K, value *wrappedWorker[K, T]) bool) {
+	c.workerCond.L.Lock()
+	defer c.workerCond.L.Unlock()
+
+	for k, v := range c.workers {
+		if !f(k, v) {
+			break
+		}
 	}
 }
